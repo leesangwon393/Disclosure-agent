@@ -50,7 +50,23 @@ class ScopeDecision:
     def clarification_message(self) -> str | None:
         if not self.needs_clarification:
             return None
-        return f"질문의 대상을 더 특정해 주세요. {self.clarification_reason or ''}".strip()
+        return ("질문의 대상을 특정하기 어렵습니다. "
+                f"{self.clarification_reason or ''} "
+                "회사명·공시 종류·기간 중 필요한 것을 알려주시면 찾아드리겠습니다.").strip()
+
+    @property
+    def out_of_corpus(self) -> tuple[str, ...]:
+        """코퍼스에 없는 회사. 검색해도 나올 수 없다."""
+        return tuple(name for name, types in (self.entity_types or {}).items()
+                     if not types)
+
+    @property
+    def out_of_corpus_message(self) -> str | None:
+        names = self.out_of_corpus
+        if not names:
+            return None
+        return (f"{', '.join(names)} 은(는) 제공된 DART 공시 코퍼스에 없는 회사입니다. "
+                "해당 회사의 공시 정보는 확인할 수 없습니다.")
 
 
 # 넓은 단어 하나가 아니라 '외부 현재 정보/판단을 요구하는 표현'을 잡는다.
@@ -84,6 +100,42 @@ def _hard_out_match(question: str) -> tuple[str, str] | None:
     return None
 
 
+# 질문 첫머리의 "<이름>의 …" / "<이름>가 …" 를 잡는다.
+#
+# 왜 필요한가 (2026-08-31, gold_abstention 160문항)
+# ------------------------------------------------
+# "쿠팡의 최근 사업보고서 매출액은?" 처럼 **코퍼스 밖 회사**를 물으면
+# EntityExtractor 가 아무것도 못 뽑아 `plan.companies` 가 빈다. 그러면
+# "회사명이 필요합니다" 라는 역질문이 나간다 — 회사명은 이미 말했는데.
+# 옳은 답은 "그 회사는 우리 코퍼스에 없습니다" 다.
+#
+# 실측: 이 패턴이 wrong_entity 40건을 40건 다 잡고, ambiguous 40건 중
+# 오탐은 `그것의`(대명사) 하나뿐이었다. 그래서 대명사만 제외한다.
+_SUBJECT_PAT = re.compile(r"^\s*(?P<name>[가-힣A-Za-z0-9&·\-\.]{2,20})(?:의|가)\s")
+
+# 사람·사물을 가리키는 말. 회사 이름이 아니다.
+_PRONOUNS = frozenset({
+    "그것", "이것", "저것", "그거", "이거", "그곳", "이곳", "여기", "거기",
+    "그때", "이때", "그분", "이분", "우리", "저희", "당사", "해당",
+})
+
+
+def unknown_subject(question: str, registry: RegistryLike) -> str | None:
+    """질문이 이름을 댔는데 코퍼스에 없는 회사면 그 이름을, 아니면 None."""
+    m = _SUBJECT_PAT.match(question or "")
+    if not m:
+        return None
+    name = m.group("name")
+    if name in _PRONOUNS:
+        return None
+    try:
+        if registry.types_for(name):
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    return name
+
+
 def _clarification_reason(plan: QueryPlan) -> str | None:
     """거부가 아니라 역질문이 필요한 명백한 빈칸만 찾는다."""
     if not plan.companies:
@@ -114,6 +166,15 @@ def evaluate_scope(plan: QueryPlan, question: str, registry: RegistryLike) -> Sc
         )
 
     if not plan.companies:
+        # 이름은 댔는데 코퍼스에 없는 회사인 경우와, 아예 이름을 안 댄 경우는
+        # 답이 다르다. 앞은 "그 회사는 없습니다", 뒤는 역질문이다.
+        unknown_name = unknown_subject(question, registry)
+        if unknown_name:
+            return ScopeDecision(
+                scope="possibly_scope", action="proceed",
+                reason=f"코퍼스에 없는 주체: {unknown_name}",
+                entity_types={unknown_name: []},
+            )
         clarification = _clarification_reason(plan)
         return ScopeDecision(
             scope="possibly_scope", action="proceed",

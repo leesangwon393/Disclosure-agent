@@ -135,3 +135,31 @@ def test_recover_checkpoint_from_interrupted_log(tmp_path):
     assert [(row["id"], row["action"], row["hcx_calls"]) for row in recovered] == [
         ("ABS-H001", "refuse", 0), ("ABS-A001", "answer", 2),
     ]
+
+
+# --------------------------------------- 본문 거부를 거부로 센다 (2026-08-31)
+#
+# 실측(160문항): 시스템이 본문에서 제대로 거부했는데 `stopped_at` 만 보고
+# "답변함" 으로 분류된 것이 47건이었다. 인정하면 44.4% -> 73.7% 다.
+
+from score_abstention import body_is_refusal  # noqa: E402
+
+
+def test_body_refusal_is_recognised():
+    for a in ("쿠팡의 매출액을 찾을 수 없어 제공할 수 없습니다.",
+              "제공된 증거에는 해당 정보가 포함되어 있지 않습니다.",
+              "확인할 수 없습니다.",
+              "해당 자료가 없습니다."):
+        assert body_is_refusal(a), a
+
+
+def test_real_answer_is_not_a_refusal():
+    for a in ("순자산액은 224,787,773,988,054원입니다.",
+              "정정 내역이 있습니다. 계약금액이 변경되었습니다."):
+        assert not body_is_refusal(a), a
+
+
+def test_empty_answer_is_not_counted_as_a_refusal():
+    """빈 답변은 거부가 아니라 실패다 — 섞으면 미구현이 숨는다."""
+    assert not body_is_refusal("")
+    assert not body_is_refusal("   ")

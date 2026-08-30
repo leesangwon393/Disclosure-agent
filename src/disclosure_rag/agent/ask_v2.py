@@ -124,10 +124,6 @@ class AskV2:
 
         # --- 1~2. 질의 이해 + 계획 ---------------------------------------
         plan = self.plan_builder.build(question)
-        if not plan.is_complete and self.client is not None:
-            plan = fill_missing_with_hcx(plan, question, self.client)
-            if plan.source.get("answer_mode") == "hcx" or plan.source.get("task") == "hcx":
-                out.hcx_calls += 1
         out.plan = plan
         if self.plan_validator is not None:
             out.validation = self.plan_validator.validate(plan)
@@ -149,10 +145,39 @@ class AskV2:
                 out.stopped_at = "scope_gate"
                 out.answer = out.scope.message or "확인되지 않습니다."
                 return out          # HCX 호출 0회
+            # --- 3a. 코퍼스 밖 회사 -------------------------------------
+            # 레지스트리에 없는 회사는 **검색해도 나올 수 없다.** 예전에는
+            # possibly_scope 로 통과시켜 검색하고 HCX 까지 부른 뒤 본문에서
+            # 거부했다. 결과는 같지만 크레딧이 나간다(실측 2026-08-31:
+            # gold_abstention 160문항에서 wrong_entity 로만 HCX 72회).
+            out_of_corpus = out.scope.out_of_corpus
+            if out_of_corpus:
+                out.stopped_at = "scope_gate"
+                out.answer = out.scope.out_of_corpus_message or "확인되지 않습니다."
+                out.notes.append(f"코퍼스 밖 회사: {', '.join(out_of_corpus)}")
+                return out      # HCX 호출 0회
+
+            # --- 3b. 역질문 ---------------------------------------------
+            # 무엇을 묻는지 특정이 안 되면 근거도 못 찾고 답도 못 만든다.
+            # 실측(2026-08-31): ambiguous 40문항 중 12건이 **빈 답변**으로
+            # 나갔다. 계산은 해놓고 쓰지 않던 값이라 그랬다. 대회 평가항목에
+            # 「정보한계 대응」이 있으므로 거부가 아니라 역질문이 맞다.
             if out.scope.needs_clarification and out.scope.clarification_message:
-                # 계산해놓고 버리던 값이다. 회사명이 없어 답할 수 없는 질문은
-                # 거부가 아니라 역질문이 맞다(평가 항목「정보한계 대응」).
-                out.notes.append(f"역질문: {out.scope.clarification_message}")
+                out.stopped_at = "clarify_gate"
+                out.answer = out.scope.clarification_message
+                return out      # HCX 호출 0회
+
+        # --- 2b. 계획 보완 (HCX) ------------------------------------------
+        # **게이트를 통과한 뒤에** 부른다. 코퍼스 밖 회사나 대상이 모호한
+        # 질문은 어차피 여기서 끝나는데, 먼저 부르면 answer_mode 하나 채우려고
+        # 크레딧을 쓴다(실측 2026-08-31: gold_abstention 160문항에서 그렇게
+        # 나간 호출이 대부분이었다). 회사 추출은 규칙이 하므로 순서를 바꿔도
+        # 게이트 판단은 달라지지 않는다.
+        if not plan.is_complete and self.client is not None:
+            plan = fill_missing_with_hcx(plan, question, self.client)
+            out.plan = plan
+            if plan.source.get("answer_mode") == "hcx" or plan.source.get("task") == "hcx":
+                out.hcx_calls += 1
 
         # --- 3.5. 존재 전수 확인 ------------------------------------------
         # 검색은 상위 k건만 본다. 거기 없다고 '없다'고 말할 수는 없어서 모델이

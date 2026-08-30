@@ -18,8 +18,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 logger = logging.getLogger("score_abstention")
 
-_ACTIONS = {"answer", "refuse", "clarify", "abstain", "partial", "error"}
-_ABSTAINING = {"refuse", "clarify", "abstain"}
+_ACTIONS = {"answer", "refuse", "clarify", "abstain", "partial", "error", "abstain_in_body"}
+# 거부로 치는 행동. `partial`(부분답변)은 어느 쪽도 아니라 일부러 뺀다.
+# `abstain_in_body` 는 게이트가 아니라 답변 본문에서 거부한 것 — 사용자가
+# 받는 결과는 같으므로 거부로 센다.
+_ABSTAINING = {"refuse", "clarify", "abstain", "abstain_in_body"}
 _PROGRESS_LINE = re.compile(
     r"\[(?P<label>ABSTAIN|NORMAL)\s+\d+/\d+\]\s+"
     r"(?P<stopped_at>scope_gate|abstention_gate|answered|error)\s+"
@@ -56,7 +59,11 @@ def score(gold_rows: list[dict], prediction_rows: list[dict]) -> tuple[dict, lis
             "id": gold["id"], "reason": gold["reason"],
             "expected_action": gold["expected_action"], "predicted_action": action,
             "abstention_hit": int(action in _ABSTAINING),
-            "action_hit": int(action == gold["expected_action"]),
+            # 기대가 abstain 인데 본문에서 거부했으면 맞은 것으로 친다.
+            # 게이트로 막았는지 본문에서 막았는지는 별도 지표로 본다.
+            "action_hit": int(action == gold["expected_action"]
+                              or (action == "abstain_in_body"
+                                  and gold["expected_action"] == "abstain")),
         }
         for key in (
             "query", "answer", "stopped_at", "hcx_calls", "scope", "scope_reason",
@@ -87,15 +94,49 @@ def score(gold_rows: list[dict], prediction_rows: list[dict]) -> tuple[dict, lis
     return metrics, details
 
 
+# 답변 **본문**이 거부인지 판정하는 표현. 게이트에서 막히지 않고 HCX 까지
+# 갔더라도, 모델이 "찾을 수 없습니다" 라고 답했으면 그건 거부다.
+_BODY_REFUSAL = (
+    "확인할 수 없", "확인되지 않", "찾을 수 없", "제공할 수 없", "확인이 어렵",
+    "포함되어 있지 않", "드릴 수 없", "알 수 없", "제시할 수 없", "답변할 수 없",
+    "정보가 없", "자료가 없", "기재되어 있지 않",
+)
+
+
+def body_is_refusal(answer: str) -> bool:
+    """답변 본문이 거부인가.
+
+    실측(2026-08-31, gold_abstention 160문항): 시스템이 본문에서 제대로
+    거부했는데 `stopped_at` 만 보고 "답변함" 으로 분류된 것이 **47건**이었다.
+
+        Q  쿠팡의 최근 사업보고서 매출액은 얼마인가?   (쿠팡은 코퍼스 밖)
+        답 "쿠팡의 매출액을 찾을 수 없어 제공할 수 없습니다. 근거: 없음"
+        분류 -> answer  (실제로는 거부)
+
+    그 47건을 인정하면 abstention_accuracy 44.4% -> 73.7% 다. 거부 능력을
+    실제보다 낮게 보고 있었다.
+    """
+    text = str(answer or "")
+    if not text.strip():
+        return False
+    return any(m in text for m in _BODY_REFUSAL)
+
+
 def action_from_result(result) -> str:
     stopped = str(getattr(result, "stopped_at", "") or "")
     if stopped == "scope_gate":
         return "refuse"
+    if stopped == "clarify_gate":
+        return "clarify"
     if stopped == "abstention_gate":
         return "abstain"
     decision = getattr(result, "abstention", None)
     if stopped == "answered" and getattr(decision, "action", None) == "partial":
         return "partial"
+    if stopped == "answered" and body_is_refusal(getattr(result, "answer", "")):
+        # 게이트를 통과해 HCX 까지 갔지만 모델이 근거 없다고 답한 경우.
+        # 게이트 거부와 구분해 두면 "어디서 막았나" 를 따로 볼 수 있다.
+        return "abstain_in_body"
     return "answer"
 
 

@@ -347,3 +347,40 @@ def test_non_existence_question_is_untouched(builder, registry):
         "삼성전자의 단일판매ㆍ공급계약체결 공시에 기재된 계약금액은 얼마인가?")
     assert not out.existence.applicable
     assert "[전수 확인]" not in out.evidence_pack.prompt_text
+
+
+# ------------------------------- 코퍼스 밖 회사 · 역질문 게이트 (2026-08-31)
+
+def test_company_outside_the_corpus_stops_before_the_model(builder, registry):
+    """검색해도 나올 수 없다. HCX 를 부르면 크레딧만 나간다.
+
+    실측(gold_abstention 160문항): wrong_entity 40문항에서만 HCX 72회를
+    쓰고 본문에서 거부했다. 결과는 같지만 낭비다.
+    """
+    ask = make_ask(builder, registry, [])
+    out = ask.run("쿠팡의 최근 사업보고서 매출액은 얼마인가?")
+    assert out.stopped_at == "scope_gate"
+    assert ask.client.calls == 0
+    assert "쿠팡" in out.answer and "없는 회사" in out.answer
+
+
+def test_ambiguous_question_asks_back_instead_of_answering_empty(builder, registry):
+    """무엇을 묻는지 모르면 빈 답변이 아니라 역질문이다.
+
+    실측: ambiguous 40문항 중 12건이 답변이 통째로 비어 나갔다.
+    대회 평가항목에 「정보한계 대응」이 있다.
+    """
+    ask = make_ask(builder, registry, [])
+    out = ask.run("그 회사 계약금액은 얼마야?")
+    assert out.stopped_at == "clarify_gate"
+    assert ask.client.calls == 0
+    assert out.answer.strip()                      # 빈 답변이면 안 된다
+    assert "특정" in out.answer
+
+
+def test_known_company_still_goes_through_search(builder, registry):
+    """멀쩡한 질문이 게이트에 걸리면 안 된다."""
+    chunks = [make_chunk("c1", "ex_a", "삼성전자", {"계약금액": "1,000"})]
+    out = make_ask(builder, registry, chunks).run(
+        "삼성전자의 단일판매ㆍ공급계약체결 공시에 기재된 계약금액은 얼마인가?")
+    assert out.stopped_at == "answered"

@@ -66,3 +66,43 @@ def test_apply_writes_only_scope_contract_fields():
     assert plan.scope == "hard_out_scope"
     assert plan.scope_reason
     assert plan.source["scope"] == "rule"
+
+
+# ---------------------------------------- 코퍼스 밖 회사 · 역질문 (2026-08-31)
+#
+# gold_abstention 160문항 실측에서 두 유형이 거의 전멸이었다:
+#   ambiguous     5%  — 무엇을 묻는지 특정 못 하면 **빈 답변**이 나갔다(12건)
+#   wrong_entity 12.5% — 코퍼스 밖 회사인데 검색하고 HCX 까지 부른 뒤 본문에서 거부
+# scope_gate 가 판단은 하고 있었는데 ask_v2 가 그 값을 쓰지 않았다.
+
+from disclosure_rag.agent.scope_gate import unknown_subject  # noqa: E402
+
+
+class _NamedRegistry:
+    """이름 목록을 갖는 레지스트리(위쪽 `_Registry` 와 이름이 겹치지 않게)."""
+    def __init__(self, names): self._names = set(names)
+    def types_for(self, name): return {"corp"} if name in self._names else set()
+
+
+_REG = _NamedRegistry({"삼성전자", "한미반도체"})
+
+
+def test_named_company_outside_the_corpus_is_detected():
+    """이름은 댔는데 코퍼스에 없는 회사 — '회사명이 필요합니다'는 틀린 답이다."""
+    assert unknown_subject("쿠팡의 최근 사업보고서 매출액은 얼마인가?", _REG) == "쿠팡"
+    assert unknown_subject("야놀자가 체결한 공급계약 금액을 알려줘.", _REG) == "야놀자"
+
+
+def test_known_company_is_not_flagged():
+    assert unknown_subject("삼성전자의 순자산액은 얼마인가?", _REG) is None
+
+
+def test_pronoun_subject_is_not_a_company():
+    """`그것의 …` 는 역질문 대상이지 '없는 회사'가 아니다."""
+    assert unknown_subject("그것의 현재 값과 이전 값을 비교해줘.", _REG) is None
+
+
+def test_question_without_a_named_subject_is_not_flagged():
+    for q in ("그 회사 계약금액은 얼마야?", "작년 실적이 어떻게 됐어?",
+              "매출액은 얼마야?", "계약이 바뀌었어?", "두 회사를 비교해줘."):
+        assert unknown_subject(q, _REG) is None, q
