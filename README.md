@@ -429,3 +429,139 @@ tests/          608개
 **배포**
 
 - 클라우드 서버 기동은 아직 안 해봤다. 로컬 기동은 확인했다(195초, 메모리 3.2GB).
+
+---
+
+## 남은 일
+
+마감 2026-09-06 23:59. 우선순위 순이고, 각 항목에 **어디를 고치면 되는지**와
+**끝났는지 어떻게 아는지**를 같이 적었다.
+
+### 1. 평가 API 서버 배포 — 이것만 안 하면 채점 자체가 안 된다
+
+로컬 기동은 확인했다(195초, 메모리 3.2GB). 클라우드 서버는 아직 안 올렸다.
+
+```bash
+# 서버에서
+git clone <이 저장소> && cd Disclosure-agent
+python3 -m venv .venv && source .venv/bin/activate && pip install -e .
+cp .env.example .env          # HCX_API_KEY 채우기, DENSE_FP16=1 켜기
+# artifacts_v2/ 를 별도 전달받아 배치 (3.7GB)
+python3 -m uvicorn disclosure_rag.serving.api:app --host 0.0.0.0 --port 80
+```
+
+- 서버 `naverage`(Ubuntu 24.04), 메모리 **8GB 로 충분**하다. 기동 피크가
+  5~6GB 인데 `DENSE_FP16=1` 이면 2.5~3GB 로 떨어진다.
+- 공인 IP + HTTP 80 이면 규격 충족. 도메인·인증서 불필요.
+- **끝났는지 확인:** 외부에서 `curl -G http://<공인IP>/answer
+  --data-urlencode "question_id=T001" --data-urlencode "question=..."` 로
+  JSON 이 오면 된다.
+- 크레딧 주의: 서버비와 CLOVA 호출이 같은 지갑이다. 평가 시간대만 켠다.
+
+### 2. 거부 능력 재측정 — 고쳐놓고 아직 안 쟀다
+
+역질문 경로와 코퍼스 밖 회사 차단을 붙였는데 그 효과를 아직 측정하지 않았다.
+
+```bash
+caffeinate -i ./run.sh python3 scripts/score_abstention.py \
+    --gold eval/gold_abstention.jsonl --out results/abstention_v3 --yes
+```
+
+- 약 2시간. 중간에 끊겨도 체크포인트에서 이어진다.
+- **기대값:** `abstention_accuracy` 90% 근처. 게이트만으로 맞히는 비율이
+  49%→72% 로 올랐고 거기에 본문 거부 인정분이 더해진다.
+- 90% 에 크게 못 미치면 `results/abstention_v3/failure_cases.jsonl` 을 열어
+  `ambiguous` 가 여전히 빈 답변인지부터 본다.
+
+### 3. suite_v2 재측정 — 검색 수정 효과 확인
+
+```bash
+caffeinate -i ./run.sh python3 scripts/score_answers.py --gold eval/suite_v2.jsonl \
+    --mode full --pipeline v2 --thinking off --yes --out results/v2suite_full3
+```
+
+- 약 1시간. **정답률은 그대로여야 하고 지연시간이 줄어야 한다.**
+  38문항에서 평균 15.7→10.2초(-35%)를 확인했지만, 느린 유형(`lookup_form`,
+  `compare`)이 많은 296문항에서 재는 게 진짜다.
+- 정답률이 **떨어지면** 회사별 사전선별이 결과를 바꾼 것이므로 되돌려야
+  한다(`src/disclosure_rag/retrieval/numpy_dense_retriever.py`,
+  `bm25_retriever.py`). 등가성 테스트는 `tests/test_retrieval_prefilter.py`.
+
+### 4. 정기공시 48% — 남은 성능 구멍 중 제일 크다
+
+40문항 중 21건 실패, 그중 **17건이 "근거는 왔는데 답을 못 씀"** 이다.
+문서는 찾는데 문서 **안에서** 맞는 표를 못 집는다. 사업보고서는 문서당
+청크가 900~1,300개다.
+
+- 볼 곳: `src/disclosure_rag/agent/evidence_processor.py`(9단계 근거 구조화),
+  `src/disclosure_rag/agent/evidence.py`(13단계 프롬프트 조립)
+- 실마리: 정답 값은 `요약재무정보` 섹션 청크에 있는데 수치사전(`facts`)에는
+  없다. 파서가 그 표를 안 뽑는다. 섹션을 지목해 검색하거나, 수치 추출을
+  그 섹션까지 넓히는 두 갈래가 있다.
+- 확인: `python3 scripts/score_answers.py --gold eval/suite_v2.jsonl
+  --mode full --pipeline v2 --yes --out results/x` 뒤
+  `results/x/results.csv` 에서 `doc_group=periodic` 만 보면 된다.
+
+### 5. 자금조달 20% — 절반은 채점 문제다
+
+26문항 중 **14건이 채점 기준이 없어 `채점불가`** 다. 실력인지 채점기 탓인지
+부터 갈라야 한다.
+
+- 채점 기준 만들기: `scripts/fill_suite_v2_required.py` 의 `FUNDING_KEYS`
+  화이트리스트를 넓힌다. 지금은 용도별 금액(시설자금·운영자금 등)만 본다.
+- 주의: 아무 수치나 넣으면 안 된다. 수치사전에는 `참석 = 5`(이사회 참석
+  인원) 같은 값도 있다. 잡음 키를 막는 테스트가
+  `tests/test_fill_suite_required.py` 에 있다.
+- 답 못 맞히는 쪽은 `1/5`, `2/5` 처럼 **금액 일부를 빠뜨리는** 형태다.
+
+### 6. suite_v2 20문항 채점 기준 없음
+
+`G0219, G0226, G0228, G0233, G0242, G0244~G0247, G0251, G0253, G0255,
+G0257, G0258, G0260~G0264, G0266` — 수치사전에 쓸 값이 없어 못 만들었다.
+억지로 만드느니 `채점불가` 로 두고 분모에서 빼는 게 낫지만, 296문항 중
+20문항(6.8%)이라 언젠가는 손으로 채워야 한다.
+
+### 7. v1/v2 A/B 를 하려면 먼저 고칠 것
+
+`--pipeline v1` 경로(`_run_full`)에는 `graded_hit` 컬럼이 없다. 그대로
+비교하면 v1 은 `answer_hit`(13%대), v2 는 `graded_hit`(76%)를 보게 되어
+**서로 다른 지표를 나란히 놓는다.** `scripts/score_answers.py` 의
+`_run_full` 에 `grade_answer` 를 붙이면 된다.
+
+### 8. thinking A/B — 아직 한 번도 안 쟀다
+
+HCX-007 은 reasoning 모델이고 기본이 ON 인데 우리는 전 경로에서 끄고 있다.
+그 판단의 근거는 `closed/lookup` 한 종류에서만 잰 것이다(긴 근거에서 값
+하나 뽑기). 다단계 작업에서도 같은 결론일지는 안 재봤다.
+
+```bash
+./run.sh python3 scripts/score_answers.py --gold eval/suite_v1.jsonl \
+    --mode full --pipeline v2 --thinking auto --yes --out results/v2_auto1
+```
+
+`--thinking auto` 는 `correction_diff`·`compare` 에만 켠다. 그 두 유형이
+suite_v1 기준 15문항(39%)이다.
+
+### 9. 기술제안서
+
+마지막 날에 써도 된다. 성능 숫자는 이 README 의 「현재 성능」 절에 정리돼
+있고, 설계 이유는 「이 구조를 고른 이유」와 「왜 이렇게 만들었나」에 있다.
+
+---
+
+## 작업할 때 알아둘 것
+
+- **측정이 도는 동안 `src/` 나 `scripts/` 를 고치지 마라.** 파이썬은 실행을
+  시작하는 순간의 코드를 읽는다. 파일 두 개를 연달아 고치는 사이에 실행이
+  시작되면 서로 안 맞는 중간 상태를 읽고, 그게 조용히 "근거 0건 → 확인되지
+  않습니다" 로 나간다. 실제로 2시간짜리 측정을 한 번 날렸다.
+  `run_tonight.sh` 는 본 측정 전에 테스트를 돌려 이걸 막는다.
+- **채점 기준을 고쳤으면 다시 돌리지 말고 재채점하라.** HCX 호출 0회, 수초다.
+  ```bash
+  python3 scripts/score_answers.py --gold eval/suite_v1.jsonl \
+      --mode full --pipeline v2 --rescore results/v2_off8 --out results/v2_off8_regrade
+  ```
+- **오탐을 막는 수정은 정탐을 죽이는지 반대편도 봐라.** 근거줄 숫자가 날짜
+  정답과 우연히 맞는 걸 막으려고 `"근거:"` 이후를 잘랐더니, 항목마다 근거를
+  다는 형식에서 뒷부분이 통째로 사라져 맞는 답이 오답이 됐다.
+- 모든 실행은 `./run.sh` 로 감싼다. 로그가 `artifacts/logs/` 에 남는다.
