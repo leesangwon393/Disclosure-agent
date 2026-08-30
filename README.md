@@ -2,8 +2,6 @@
 공시자료를 근거로 사용자 질의에 답변하는 공시 에이전트
 
 
-
-
 ┌──────────────────── OFFLINE ────────────────────┐
 
 DART
@@ -19,10 +17,10 @@ Correction + Metadata
   └────────→ Section Card                         │
              └─ Section                           │
              └─ Corpus Keywords                   │
-                      │                           │
-└──────────────────── │───────────────────────────│
-                      │                           │
-                      ▼                           ▼
+                     │                            │
+└─────────────────────│────────────────────────────│──┘
+                      │                            │
+                      ▼                            ▼
 
 ┌──────────────────── ONLINE ───────────────────────────────┐
 
@@ -32,16 +30,16 @@ Correction + Metadata
                   "어느 회사?"
                        ↓
                 Query Planner ◀──────────────┐
-        "무엇을·어디서·어떻게 찾지?"                │
+        "무엇을·어디서·어떻게 찾지?"          │
              ↑         ↑                     │
              │         │                     │
-      Section Card   Corpus Keywords         │
+      Section Card   Corpus Keywords          │
              │                               │
              └──────────┐                    │
                         ↓                    │
                 Metadata Filter              │
                         ↓                    │
-              Hybrid Retrieval  ◀──── Index  │
+              Hybrid Retrieval  ◀──── Index │
                         ↓                    │
                Fusion / Reranker             │
                         ↓                    │
