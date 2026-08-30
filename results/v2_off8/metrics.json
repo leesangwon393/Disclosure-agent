@@ -1,0 +1,54 @@
+{
+  "mode": "full",
+  "n": 38,
+  "labels": {
+    "정답": 28,
+    "답변실패": 7,
+    "거부(검색실패)": 2,
+    "거부(근거있음)": 1
+  },
+  "label_rate": {
+    "정답": 0.7368,
+    "답변실패": 0.1842,
+    "거부(검색실패)": 0.0526,
+    "거부(근거있음)": 0.0263
+  },
+  "latency_mean_sec": 10.19,
+  "latency_p95_sec": 18.86,
+  "latency_max_sec": 41.06,
+  "answer_hit": 0.1579,
+  "evidence_hit": 0.8684,
+  "refusal": 0.0789,
+  "numbers_grounded": 0.8158,
+  "has_citation": 0.7895,
+  "validation_passed": 0.6053,
+  "answer_hit_exact": 0.1053,
+  "graded_hit": 0.7368,
+  "graded_hit_n": 38,
+  "ungradeable_n": 0,
+  "answer_hit_given_evidence": 0.1818,
+  "field_coverage": 0.7479,
+  "field_coverage_n": 22,
+  "silent_omission_rate": 0.2521,
+  "silent_omission_rate_n": 22,
+  "citation_recall": 0.6821,
+  "citation_recall_n": 38,
+  "citation_precision": 0.8194,
+  "citation_precision_n": 30,
+  "required_coverage": 0.4896,
+  "required_coverage_n": 16,
+  "by_doc_group": {
+    "?": {
+      "n": 38,
+      "answer_hit": 0.1579,
+      "evidence_hit": 0.8684,
+      "refusal": 0.0789,
+      "numbers_grounded": 0.8158,
+      "has_citation": 0.7895,
+      "validation_passed": 0.6053,
+      "answer_hit_exact": 0.1053,
+      "graded_hit": 0.7368,
+      "gradeable_n": 38
+    }
+  }
+}

@@ -122,18 +122,41 @@ _DATE_KO = re.compile(r"^(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일$")
 _NUMERIC_TOKEN = re.compile(r"^-?\d[\d,]*(?:\.\d+)?$")
 
 
-def _body_only(answer: str) -> str:
-    """근거 줄을 잘라낸 본문. 채점은 항상 이걸로 한다.
+_REPORT_ID_PAT = re.compile(r"\b(?:periodic|major|exchange|holding)_\d+")
 
-    실측 실패(2026-08-31): `report_id(exchange_20240424800596)` 안에 `20240424`
-    가 들어 있어서, 날짜 정답 `2024-04-24` 가 **거부 답변에서도 만점**을 받았다.
+
+def _body_only(answer: str) -> str:
+    """채점용 본문 — **문서 ID만** 지운다. 뒷부분을 자르지 않는다.
+
+    왜 지우나 (2026-08-31 실측)
+    --------------------------
+    `report_id(exchange_20240424800596)` 안에 `20240424` 가 들어 있어서
+    날짜 정답 `2024-04-24` 가 **거부 답변에서도 만점**을 받았다.
 
         답변  "확인되지 않습니다. 근거: report_id(exchange_20240424800596)"
         정답  ["2024-04-24", "2026-10-30"]  -> 2/2 만점
 
-    날짜 정답이 들어간 문항이 suite_v1 5건, suite_v2 54건이다.
+    왜 자르면 안 되나 (같은 날, 자른 뒤 재현)
+    ----------------------------------------
+    처음엔 `"근거:"` 이후를 통째로 잘랐다. 그런데 모델은 항목마다 근거를
+    다는 형식도 쓴다:
+
+        - 현대글로비스: 3,365,500,000,000원
+          - 근거: [exchange_20241231800103]
+        - HMM: 1,282,363,356,560원
+          ...
+        따라서 더 큰 기업은 현대글로비스입니다.
+
+    첫 `"근거:"` 에서 자르면 **뒤에 오는 값과 결론이 통째로 사라진다.**
+    v2_off8 에서 S013·S037 두 문항이 맞는 답인데 오답으로 찍혔다.
+
+    그래서 자르지 않고 문서 ID 토큰만 제거한다 — 오탐의 원인은 그것뿐이다.
     """
-    return (answer or "").split("근거:")[0]
+    text = (answer or "")
+    text = _REPORT_ID_PAT.sub(" ", text)
+    # `chunk_id: xxx::main::C1` 처럼 남는 식별자도 숫자를 품는다.
+    text = re.sub(r"chunk_id\s*[:=]\s*\S+", " ", text)
+    return text
 
 
 def _norm_token(s: str) -> str:
@@ -274,7 +297,6 @@ def _answer_hit(answer: str, golds: list[str]) -> bool:
 
 
 # 답변에서 '값 후보'만 골라내기 위한 패턴.
-_REPORT_ID_PAT = re.compile(r"\b(?:periodic|major|exchange|holding)_\d+")
 _YEAR_TOKEN = re.compile(r"^(?:19|20)\d{2}$")
 
 

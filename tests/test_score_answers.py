@@ -509,3 +509,43 @@ def test_real_suite_correction_rows_have_multiple_candidates():
     for r in corr:
         assert r.get("chain_count") is not None
         assert r.get("corrected_doc_count", 0) > 0
+
+
+# ------------------------------------------- 근거 표기 처리 (2026-08-31 두 번 고침)
+#
+# 1차: 근거줄의 `report_id(exchange_20240424800596)` 안 숫자가 날짜 정답과
+#      우연히 맞아 **거부 답변이 만점**을 받았다. -> "근거:" 이후를 잘랐다.
+# 2차: 모델은 항목마다 근거를 다는 형식도 쓴다. 첫 "근거:" 에서 자르니
+#      **뒤에 오는 값과 결론이 통째로 사라져** 맞는 답이 오답이 됐다
+#      (v2_off8 에서 S013·S037 실제 발생). -> 자르지 않고 문서 ID 만 지운다.
+
+from score_answers import _body_only  # noqa: E402
+
+
+def test_document_ids_do_not_satisfy_a_date_requirement():
+    """거부만 한 답변이 근거줄 숫자로 날짜 항목을 채우면 안 된다."""
+    bad = "확인되지 않습니다. 근거: report_id(exchange_20240424800596)"
+    assert required_report(bad, ["2024-04-24"])["matched"] == 0
+
+
+def test_inline_citations_do_not_truncate_the_answer():
+    """항목마다 근거를 다는 형식에서 뒷부분이 잘리면 안 된다."""
+    a = ("- 현대글로비스: 3,365,500,000,000원\n  - 근거: [exchange_20241231800103]\n"
+         "- HMM: 1,282,363,356,560원\n  - 근거: [exchange_20231027800429]\n"
+         "따라서 최대 계약금액이 더 큰 기업은 현대글로비스입니다.")
+    gold = "현대글로비스 (현대글로비스 3,365,500,000,000 vs HMM 1,282,363,356,560)"
+    assert grade_answer(a, gold, [gold]) == (1, "compare")
+
+
+def test_inline_citations_keep_later_required_items():
+    a = ("- 제목: 양해각서(MOU) 체결\n  - 근거: [exchange_20250205800058]\n"
+         "- 주요내용: VRNJ Co.,Ltd. 와 협동 로봇 300대, 계약기간 2026년 12월 31일까지")
+    rep = required_report(a, ["VRNJ", "300", "2026년 12월 31일", "MOU"])
+    assert rep["matched"] == 4, rep["missing"]
+
+
+def test_body_only_keeps_content_and_drops_ids():
+    text = "값은 1,000원이다. 근거: report_id(major_20240101000001) chunk_id: x::main::C1"
+    body = _body_only(text)
+    assert "1,000원" in body and "근거" in body
+    assert "20240101000001" not in body and "C1" not in body
