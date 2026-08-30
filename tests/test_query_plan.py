@@ -334,3 +334,47 @@ class TestOnGoldSuite:
         for _r, p in pairs:
             for period in p.periods:
                 assert re.match(r"^\d{4}(-\d{2})?$", period), period
+
+
+# ------------------------------------------------------- 개념어 -> 공시유형 전개
+#
+# 실측 실패(S030~S032, 2026-08-30): "2025년에 실시한 자금조달 내역" 은
+# 공시유형명을 하나도 안 써서 report_kinds 가 비었고, 그래서 doc_group 도
+# 안 정해져 검색이 전체 문서를 훑었다. 정답 문서는 상위에 못 올라왔다.
+
+from disclosure_rag.agent.query_plan import expand_concept_kinds  # noqa: E402
+
+_KNOWN = [
+    "주요사항보고서(유상증자결정)", "주요사항보고서(전환사채권발행결정)",
+    "주요사항보고서(교환사채권발행결정)", "주요사항보고서(무상증자결정)",
+    "주요사항보고서(자본으로인정되는채무증권발행결정)", "유상증자결정",
+    "상각형조건부자본증권발행결정",
+    "단일판매공급계약체결", "신규시설투자등",
+]
+
+
+def test_funding_concept_expands_to_every_issuing_kind():
+    got = expand_concept_kinds("한화오션이 2023년에 실시한 자금조달 내역을 정리해줘", _KNOWN)
+    assert "주요사항보고서(유상증자결정)" in got
+    assert "주요사항보고서(전환사채권발행결정)" in got
+    assert "주요사항보고서(자본으로인정되는채무증권발행결정)" in got
+
+
+def test_expansion_must_not_be_narrower_than_the_question():
+    """한 종류만 잡히면 나머지 문서가 필터에서 잘려 오히려 나빠진다.
+
+    디앤디파마텍(S030)의 정답 문서는 전환사채권발행결정과
+    자본으로인정되는채무증권발행결정 둘이다. 유상증자만 잡으면 둘 다 사라진다.
+    """
+    got = expand_concept_kinds("디앤디파마텍이 2025년에 실시한 자금조달 내역", _KNOWN)
+    assert len(got) >= 5
+
+
+def test_expansion_only_returns_kinds_that_exist_in_the_schema():
+    got = expand_concept_kinds("자금조달 내역", ["주요사항보고서(유상증자결정)"])
+    assert got == ["주요사항보고서(유상증자결정)"]
+
+
+def test_unrelated_question_is_not_expanded():
+    assert expand_concept_kinds("삼성전자의 순자산액은 얼마인가?", _KNOWN) == []
+    assert expand_concept_kinds("신규시설투자등 공시를 정리해줘", _KNOWN) == []

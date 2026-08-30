@@ -42,6 +42,7 @@ from disclosure_rag.agent.answer_generator import generate_answer
 from disclosure_rag.agent.decompose import DecomposeResult, decompose_and_search
 from disclosure_rag.agent.evidence import EvidencePack, build_evidence_pack_from_retrieval
 from disclosure_rag.agent.evidence_processor import ProcessedEvidence, process_evidence
+from disclosure_rag.agent.existence import ExistenceResult, NOT_APPLICABLE, check_existence
 from disclosure_rag.agent.query_plan import (
     PlanValidation,
     QueryPlan,
@@ -73,6 +74,7 @@ class AskV2Result:
     processed: ProcessedEvidence | None = None
     sufficiency: SufficiencyReport | None = None
     abstention: AbstentionDecision | None = None
+    existence: ExistenceResult = NOT_APPLICABLE   # 3.5 존재 전수 확인
     evidence: list = field(default_factory=list)   # 부모 확장까지 끝난 최종 근거
     evidence_pack: EvidencePack | None = None
     validation_result: Any = None
@@ -142,6 +144,19 @@ class AskV2:
                 out.answer = out.scope.message or "확인되지 않습니다."
                 return out          # HCX 호출 0회
 
+        # --- 3.5. 존재 전수 확인 ------------------------------------------
+        # 검색은 상위 k건만 본다. 거기 없다고 '없다'고 말할 수는 없어서 모델이
+        # "확인할 수 없습니다"로 물러선다. manifest 는 전체 목록이라 0건을
+        # 근거 있게 말할 수 있다. 판정만 만들어 두고 답은 HCX 가 쓴다.
+        manifest = getattr(self.dual, "manifest", None)
+        if manifest:
+            try:
+                out.existence = check_existence(
+                    question, manifest,
+                    companies=plan.companies, report_kinds=plan.report_kinds)
+            except Exception:  # noqa: BLE001
+                logger.warning("[ASKv2] 존재 확인 실패 — 없이 진행", exc_info=True)
+
         # --- 4~10. 검색 -> 구조화 -> 충분성 (부족하면 재검색) --------------
         hint = ""
         for attempt in range(self.max_nudges + 1):
@@ -162,6 +177,16 @@ class AskV2:
         # --- 11. 거부 게이트 ---------------------------------------------
         out.abstention = decide_from_processed(
             plan, out.processed, decompose_result=out.decomposed)
+        # 전수 확인으로 답이 정해진 질문은 거부하지 않는다. 여기서 막으면
+        # "확인되지 않습니다"가 나가는데, 우리는 이미 답을 알고 있다.
+        if out.existence.applicable and out.existence.verdict in ("예", "아니오") \
+                and out.abstention.should_abstain:
+            out.notes.append(
+                f"거부 게이트({out.abstention.reason}) 무시 — 전수 확인으로 "
+                f"'{out.existence.verdict}' 판정")
+            out.abstention = AbstentionDecision(
+                action="answer", reason="sufficient",
+                evidence_count=out.abstention.evidence_count)
         if out.abstention.should_abstain:
             out.stopped_at = "abstention_gate"
             out.answer = out.abstention.message or "확인되지 않습니다."
@@ -174,6 +199,7 @@ class AskV2:
             facts=self._facts_of(out.decomposed),
             aggregation=getattr(plan, "aggregation", "none"),
             max_chars=self.max_evidence_chars,
+            scope_note=out.existence.prompt_block(),
         )
 
         # --- 14. 답변 생성 ------------------------------------------------

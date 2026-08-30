@@ -8,6 +8,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from score_answers import _answer_hit, _gold_answers, _is_refusal, _label, _norm  # noqa: E402
@@ -321,3 +323,164 @@ def test_verdict_reads_the_head_not_the_details():
 def test_negative_is_checked_before_positive():
     """'존재하지 않습니다'가 '존재합니다'에 걸리면 안 된다."""
     assert _verdict("해지된 계약은 존재하지 않습니다.") == "아니오"
+
+
+# --------------------------------------------------------------- 서술형(D형) 채점
+#
+# 2026-08-30 추가. 그전까지 서술형 16문항(suite_v1 의 42%)은 정답 문장이 없어
+# 자동으로 0점 처리됐고, 그 0점이 전체 평균에 섞여 실제보다 낮은 숫자가 나왔다.
+
+from score_answers import (  # noqa: E402
+    _GRADEABLE_KEYS, _aggregate, grade_answer, required_report,
+)
+
+
+def test_required_all_needs_every_item():
+    req = ["684,000", "확정발행가"]
+    assert grade_answer("684,000원 확정발행가로 정정", "", [], required=req) == (1, "required")
+    assert grade_answer("684,000원으로 정정", "", [], required=req) == (0, "required")
+
+
+def test_required_coverage_gives_partial_credit():
+    rep = required_report("금액은 1,000원", ["1,000", "가처분", "해제"])
+    assert rep["n"] == 3 and rep["matched"] == 1
+    assert rep["coverage"] == round(1 / 3, 4)
+    assert rep["missing"] == ["가처분", "해제"]
+
+
+def test_required_report_is_none_when_nothing_required():
+    """required_all 이 없는 문항은 '0점'이 아니라 '해당 없음'이어야 한다."""
+    assert required_report("아무 답", [])["coverage"] is None
+
+
+def test_number_notation_differences_are_absorbed():
+    """정답지 9.90, 답변 9.9% — 같은 값이다."""
+    assert required_report("자기자본대비 9.9%", ["9.90"])["matched"] == 1
+    assert required_report("자기자본대비 9%", ["9.0"])["matched"] == 1
+    assert required_report("금액 5296200000000원", ["5,296,200,000,000"])["matched"] == 1
+
+
+def test_number_match_is_exact_not_substring():
+    """19.90 안에 9.90 이 들어 있다고 맞다고 하면 안 된다."""
+    assert required_report("비율은 19.90% 입니다", ["9.90"])["matched"] == 0
+    assert required_report("금액 5,296,200,000,001", ["5,296,200,000,000"])["matched"] == 0
+
+
+def test_date_notation_differences_are_absorbed():
+    """정답지 2024-04-24, 답변 '2024년 4월 24일' — 같은 날이다."""
+    for ans in ("이사회결의일 2024년 4월 24일", "기간 2024.04.24 ~", "접수 20240424800596"):
+        assert required_report(ans, ["2024-04-24"])["matched"] == 1, ans
+    assert required_report("2024년 4월 25일", ["2024-04-24"])["matched"] == 0
+
+
+def test_korean_date_token_matches_iso_answer():
+    assert required_report("계약기간 2025-02-05 ~ 2026-12-31", ["2026년 12월 31일"])["matched"] == 1
+
+
+def test_latin_tokens_are_case_insensitive():
+    assert required_report("상대방은 vrnj co., ltd.", ["VRNJ"])["matched"] == 1
+    assert required_report("공급물량 19 GWh", ["19GWh"])["matched"] == 1
+
+
+def test_required_takes_precedence_over_empty_gold():
+    """정답 문장이 비어 있어도 required_all 이 있으면 채점된다."""
+    hit, kind = grade_answer("청주 M15X 건설", "", [], required=["청주 M15X"])
+    assert (hit, kind) == (1, "required")
+
+
+# ------------------------------------------------------- 채점 불가 문항의 분모 처리
+
+def test_ungradeable_rows_get_their_own_label():
+    assert _label(False, True, False, gradeable=False) == "채점불가"
+    assert _label(False, True, False, gradeable=True) == "답변실패"
+
+
+def _row(graded, gradeable, label="정답"):
+    return {"label": label, "elapsed_sec": 1.0,
+            "graded_hit": graded, "gradeable": gradeable}
+
+
+def test_graded_hit_excludes_ungradeable_rows():
+    """정답이 없는 문항을 분모에 넣으면 실제보다 낮게 나온다.
+
+    실측(2026-08-30): 38문항 중 16문항에 정답이 없어 52.6% 로 찍혔고,
+    채점 가능한 22문항만 보면 90.9% 였다.
+    """
+    rows = [_row(1, 1), _row(1, 1), _row(0, 0), _row(0, 0)]
+    m = _aggregate(rows, "full")
+    assert m["graded_hit"] == 1.0          # 2/2, 채점 불가 2건은 빠진다
+    assert m["graded_hit_n"] == 2
+    assert m["ungradeable_n"] == 2
+
+
+def test_graded_hit_is_none_when_nothing_is_gradeable():
+    m = _aggregate([_row(0, 0)], "full")
+    assert m["graded_hit"] is None
+    assert m["graded_hit_n"] == 0
+
+
+def test_graded_hit_left_out_of_plain_rate_keys():
+    """일반 평균 목록에 남아 있으면 분모가 두 번 계산된다."""
+    from score_answers import _RATE_KEYS
+    assert "graded_hit" not in _RATE_KEYS
+    assert "graded_hit" in _GRADEABLE_KEYS
+
+
+# ------------------------------------------------- 정답 후보가 여럿인 경우(D-2형)
+#
+# 질문이 대상을 특정하지 않을 때가 있다. 실측(S023~S026, 2026-08-30):
+#   "현대건설의 단일판매ㆍ공급계약체결 공시가 정정된 내역이 있는가?"
+#   -> 해당 유형 정정 공시 70건, 값이 바뀐 체인 10개. 정답지는 그중 1개만 인정.
+#   모델은 다른 체인을 설명했고 오답이 됐다 — 틀린 게 아니라 다른 걸 고른 것이다.
+
+from score_answers import required_any_report  # noqa: E402
+
+
+def test_any_one_candidate_is_enough():
+    groups = [["1,000,000", "계약금액"], ["2,000,000", "매출액대비"]]
+    assert grade_answer("계약금액이 2,000,000원", "", [], any_groups=groups)[0] == 0
+    hit, kind = grade_answer("매출액대비 기준 2,000,000", "", [], any_groups=groups)
+    assert (hit, kind) == (1, "required_any")
+
+
+def test_partial_credit_uses_the_best_candidate():
+    """제일 많이 맞은 후보로 통계를 낸다 — 0 으로 뭉개면 개선이 안 보인다."""
+    rep = required_any_report("계약금액은 1,000,000원", [["1,000,000", "계약금액", "없는값"],
+                                                    ["9,999", "다른항목"]])
+    assert rep["matched"] == 2 and rep["n"] == 3
+    assert rep["n_groups"] == 2 and rep["n_full"] == 0
+
+
+def test_full_match_count_is_reported():
+    rep = required_any_report("계약금액 1,000,000원 / 매출액대비 5.0%",
+                              [["1,000,000"], ["5.0"], ["없는값"]])
+    assert rep["n_full"] == 2
+
+
+def test_empty_candidate_list_is_not_applicable():
+    rep = required_any_report("아무 답", [])
+    assert rep["coverage"] is None and rep["n"] == 0
+
+
+def test_blank_entries_inside_a_candidate_are_ignored():
+    assert required_any_report("계약금액 1,000,000원", [["1,000,000", "", "  "]])["matched"] == 1
+
+
+def test_required_any_takes_precedence_over_required_all():
+    hit, kind = grade_answer("값은 500 이다", "", [], required=["999"],
+                             any_groups=[["500"]])
+    assert (hit, kind) == (1, "required_any")
+
+
+def test_real_suite_correction_rows_have_multiple_candidates():
+    """정정 문항이 후보 하나만 갖고 있으면 예전 문제로 되돌아간 것이다."""
+    import json
+    p = Path(__file__).resolve().parents[1] / "eval" / "suite_v1.jsonl"
+    if not p.exists():
+        pytest.skip("suite_v1 없음")
+    rows = [json.loads(l) for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
+    corr = [r for r in rows if r.get("required_any")]
+    assert corr, "정정 문항에 required_any 가 없다"
+    for r in corr:
+        assert r.get("chain_count") is not None
+        assert r.get("corrected_doc_count", 0) > 0

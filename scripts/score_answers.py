@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+from decimal import Decimal, InvalidOperation
 import logging
 import os
 import re
@@ -54,12 +55,19 @@ _RATE_KEYS = (
     # 순위 품질 (2026-08-30 추가) — "가져왔는가"와 "몇 등으로 가져왔는가"를 분리한다
     "context_recall", "context_precision", "context_ap", "mrr", "ndcg_at_10",
     # 나열로 걸린 것과 정확히 맞힌 것의 구분 (2026-08-30)
-    "answer_hit_exact", "graded_hit",
+    "answer_hit_exact",
 )
+
+# 채점 기준(정답 문장 또는 required_all)이 있는 문항만으로 평균 내는 지표.
+# 전체를 분모로 쓰면 채점 불가 문항이 자동 0점이 되어 실제보다 낮게 나온다.
+# 실측(2026-08-30): suite_v1 38문항 중 16문항에 정답이 없어 52.6% 로 찍혔고,
+# 채점 가능한 22문항만 보면 90.9% 였다.
+_GRADEABLE_KEYS = ("graded_hit",)
 
 # 값이 None 일 수 있는 지표(해당 없음). 평균에서 None 을 빼고 센다.
 _OPTIONAL_KEYS = (
     "field_coverage", "silent_omission_rate", "citation_recall", "citation_precision",
+    "required_coverage",
 )
 _NUM = re.compile(r"\d[\d,]*\.?\d*")
 
@@ -85,6 +93,103 @@ def _gold_answers(row: dict) -> list[str]:
 
 def _gold_report_ids(row: dict) -> set[str]:
     return set(row.get("gold_report_ids") or row.get("gold_doc_ids") or [])
+
+
+# ------------------------------------------------------------------- 서술형 대조
+#
+# 서술형 질문("자금조달 내역을 유형별로 정리해줘")은 정답이 문자열 하나가 아니다.
+# 그래서 정답지에 `required_all` — **반드시 등장해야 하는 항목들** — 을 넣고
+# 포함 여부로 채점한다. 전부 나오면 정답, 아니면 몇 개 나왔는지를 따로 센다.
+#
+# 표기 차이를 흡수하지 않으면 맞은 답을 틀렸다고 한다. 실제로 갈리는 게 둘이다:
+#   수치  정답지 "9.90"      vs 답변 "9.9%"        -> 수로 비교한다
+#   날짜  정답지 "2024-04-24" vs 답변 "2024년 4월 24일" -> 표기 변형을 모두 본다
+
+_DATE_ISO = re.compile(r"^(\d{4})[-./](\d{1,2})[-./](\d{1,2})$")
+_DATE_KO = re.compile(r"^(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일$")
+_NUMERIC_TOKEN = re.compile(r"^-?\d[\d,]*(?:\.\d+)?$")
+
+
+def _norm_token(s: str) -> str:
+    """비교용 정규화 — 콤마·공백·통화기호를 지우고 라틴 문자는 소문자로."""
+    return re.sub(r"[,\s원₩]", "", (s or "")).lower()
+
+
+def _date_forms(tok: str) -> list[str] | None:
+    """날짜면 표기 변형 전부를, 날짜가 아니면 None 을 돌려준다."""
+    t = (tok or "").strip()
+    m = _DATE_ISO.match(t) or _DATE_KO.match(t)
+    if not m:
+        return None
+    y, mo, d = m.group(1), int(m.group(2)), int(m.group(3))
+    return [_norm_token(f) for f in (
+        f"{y}-{mo:02d}-{d:02d}", f"{y}.{mo:02d}.{d:02d}", f"{y}/{mo:02d}/{d:02d}",
+        f"{y}{mo:02d}{d:02d}",
+        f"{y}년{mo}월{d}일", f"{y}년{mo:02d}월{d:02d}일",
+    )]
+
+
+def _decimals(text: str) -> set:
+    """답변에 나온 수를 Decimal 집합으로. 콤마·소수점 표기 차이를 흡수한다."""
+    out = set()
+    for m in _NUM.finditer(text or ""):
+        raw = m.group(0).replace(",", "").rstrip(".")
+        try:
+            out.add(Decimal(raw))
+        except InvalidOperation:
+            continue
+    return out
+
+
+def _token_present(tok: str, answer_norm: str, answer_nums: set) -> bool:
+    tok = str(tok or "").strip()
+    if not tok:
+        return True
+    forms = _date_forms(tok)
+    if forms is not None:
+        return any(f in answer_norm for f in forms)
+    if _NUMERIC_TOKEN.match(tok):
+        try:
+            return Decimal(tok.replace(",", "")) in answer_nums
+        except InvalidOperation:
+            pass
+    return _norm_token(tok) in answer_norm
+
+
+def required_any_report(answer: str, groups) -> dict:
+    """여러 정답 후보 중 **하나만** 맞으면 정답인 경우.
+
+    질문이 대상을 특정하지 않을 때 쓴다. 실측(S023~S026, 2026-08-30):
+
+        Q  "현대건설의 단일판매ㆍ공급계약체결 공시가 정정된 내역이 있는가?"
+        현실  해당 유형 정정 공시 70건, 값이 바뀐 정정 체인 10개
+        정답지  그중 1개 체인의 값만 정답으로 인정
+
+    모델은 다른 체인을 설명했다. 틀린 게 아니라 **다른 걸 고른 것**이다.
+    그래서 체인 전부를 후보로 두고, 하나라도 온전히 설명하면 정답으로 친다.
+
+    통계는 가장 많이 맞은 후보 기준으로 낸다 — 부분 점수가 0 으로 뭉개지지 않게.
+    """
+    valid = [g for g in (groups or []) if [t for t in (g or []) if str(t).strip()]]
+    if not valid:
+        return {"n": 0, "matched": 0, "coverage": None, "missing": [], "n_groups": 0}
+    reports = [required_report(answer, g) for g in valid]
+    best = max(reports, key=lambda r: (r["matched"] == r["n"], r["coverage"] or 0))
+    return {**best, "n_groups": len(valid),
+            "n_full": sum(1 for r in reports if r["n"] and r["matched"] == r["n"])}
+
+
+def required_report(answer: str, required) -> dict:
+    """required_all 대조 결과. 빈 목록이면 coverage 는 None(해당 없음)."""
+    items = [t for t in (required or []) if str(t).strip()]
+    if not items:
+        return {"n": 0, "matched": 0, "coverage": None, "missing": []}
+    an = _norm_token(answer)
+    nums = _decimals(answer)
+    missing = [t for t in items if not _token_present(t, an, nums)]
+    matched = len(items) - len(missing)
+    return {"n": len(items), "matched": matched,
+            "coverage": round(matched / len(items), 4), "missing": missing}
 
 
 # --------------------------------------------------------------------------- 채점
@@ -225,9 +330,23 @@ def _stated_winner(answer: str, candidates: list[str]) -> str | None:
     return None
 
 
-def grade_answer(answer: str, gold: str, golds: list[str]) -> tuple[int, str]:
+def grade_answer(answer: str, gold: str, golds: list[str],
+                 required=None, any_groups=None) -> tuple[int, str]:
     """정답 형식을 판별해 채점한다. `(맞았나, 형식)` 을 돌려준다."""
     gold = (gold or "").strip()
+
+    if any_groups:
+        # D-2형 — 정답 후보가 여럿. 하나만 온전히 맞으면 정답이다.
+        rep = required_any_report(answer, any_groups)
+        if rep["n"]:
+            return int(rep["matched"] == rep["n"]), "required_any"
+
+    items = [t for t in (required or []) if str(t).strip()]
+    if items:
+        # D형 — 서술형. 필수 항목이 **전부** 나와야 정답이다.
+        # 부분 점수는 required_coverage 로 따로 본다.
+        rep = required_report(answer, items)
+        return int(rep["matched"] == rep["n"]), "required"
 
     m = _YESNO_GOLD.match(gold)
     if m:
@@ -258,7 +377,11 @@ def _is_refusal(answer: str) -> bool:
     return any(m in (answer or "") for m in _REFUSAL)
 
 
-def _label(answer_hit: bool, evidence_hit: bool, refusal: bool) -> str:
+def _label(answer_hit: bool, evidence_hit: bool, refusal: bool,
+           *, gradeable: bool = True) -> str:
+    if not gradeable:
+        # 정답도 required_all 도 없는 문항. 맞았는지 틀렸는지 말할 수 없다.
+        return "채점불가"
     if answer_hit:
         return "정답"
     if refusal:
@@ -374,11 +497,21 @@ def _run_v2(ask, rows: list[dict]) -> list[dict]:
         elapsed = time.time() - t
 
         hit = _answer_hit(answer, golds)
-        if golds:
+        required = [t for t in (row.get("required_all") or []) if str(t).strip()]
+        any_groups = [g for g in (row.get("required_any") or []) if g]
+        req = (required_any_report(answer, any_groups) if any_groups
+               else required_report(answer, required))
+        bonus = required_report(answer, row.get("bonus_any") or [])
+        if any_groups or required:
+            graded, gold_kind = grade_answer(answer, "", golds, required=required,
+                                             any_groups=any_groups)
+        elif golds:
             graded, gold_kind = grade_answer(answer, row.get("answer") or "", golds)
         else:
-            # 정답 문장이 없는 서술형. 항목 커버리지로 대신 본다.
-            graded, gold_kind = 0, "open"
+            # 정답 문장도 required_all 도 없다 — 채점할 기준 자체가 없는 문항.
+            # 0 으로 두되 gradeable=0 이라 평균에서 빠진다.
+            graded, gold_kind = 0, "ungradeable"
+        gradeable = int(bool(golds) or bool(required) or bool(any_groups))
         numbers = _answer_numbers(answer)
         position = _gold_position(answer, golds)
         # 정확히 맞힘 = 정답이 **첫 값**이고, 나열한 값이 둘 이하.
@@ -402,15 +535,22 @@ def _run_v2(ask, rows: list[dict]) -> list[dict]:
             "id": row.get("id"), "query": row["query"], "company": row.get("company"),
             "doc_group": row.get("doc_group") or "?",
             "gold": golds[0] if golds else "", "n_gold": len(golds),
+            # results.csv 는 사람이 읽는 용도라 줄인다. 재채점은 answers.jsonl 의
+            # 원문으로 한다 — 잘린 답으로 채점하면 뒤쪽 항목을 놓친다.
             "answer": answer.replace("\n", " ")[:600],
+            "answer_full": answer,
             "answer_hit": int(hit), "answer_hit_exact": exact,
-            "graded_hit": graded, "gold_kind": gold_kind,
+            "graded_hit": graded, "gold_kind": gold_kind, "gradeable": gradeable,
+            "required_n": req["n"], "required_matched": req["matched"],
+            "required_coverage": req["coverage"],
+            "required_missing": " / ".join(str(x) for x in req["missing"]),
+            "bonus_n": bonus["n"], "bonus_matched": bonus["matched"],
             **{k: v for k, v in open_score.items() if k != "silent_fields"},
             "silent_fields": " / ".join(open_score["silent_fields"]),
             "n_answer_numbers": len(numbers), "gold_position": position,
             "evidence_hit": int(evidence_hit), "citation_hit": int(citation_hit),
             "refusal": int(refusal),
-            "label": _label(bool(graded), evidence_hit, refusal),
+            "label": _label(bool(graded), evidence_hit, refusal, gradeable=bool(gradeable)),
             # v2 전용 진단
             "numbers_grounded": int(bool(validation and validation.numbers_grounded)),
             "has_citation": int(bool(validation and validation.has_citation)),
@@ -572,6 +712,18 @@ def _aggregate(rows: list[dict], mode: str) -> dict:
     for key in _RATE_KEYS:
         if rows and key in rows[0]:
             metrics[key] = round(sum(r[key] for r in rows) / n, 4)
+
+    # 채점 기준이 있는 문항만 분모에 넣는다. 아래 세 줄이 없으면 정답이 비어 있는
+    # 문항이 자동 0점이 되어 전체 점수를 끌어내린다.
+    gradeable_rows = [r for r in rows if r.get("gradeable", 1)]
+    for key in _GRADEABLE_KEYS:
+        if rows and key in rows[0]:
+            metrics[key] = (round(sum(r[key] for r in gradeable_rows) / len(gradeable_rows), 4)
+                            if gradeable_rows else None)
+            metrics[f"{key}_n"] = len(gradeable_rows)
+    if rows:
+        metrics["ungradeable_n"] = len(rows) - len(gradeable_rows)
+
     if rows and "answer_hit" in rows[0]:
         with_ev = [r for r in rows if r["evidence_hit"]]
         metrics["answer_hit_given_evidence"] = (
@@ -614,6 +766,11 @@ def _aggregate(rows: list[dict], mode: str) -> dict:
             for key in _RATE_KEYS:
                 if key in members[0]:
                     m[key] = round(sum(x[key] for x in members) / len(members), 4)
+            gm = [x for x in members if x.get("gradeable", 1)]
+            for key in _GRADEABLE_KEYS:
+                if key in members[0]:
+                    m[key] = (round(sum(x[key] for x in gm) / len(gm), 4) if gm else None)
+            m["gradeable_n"] = len(gm)
             found_g = sorted(x["first_gold_rank"] for x in members
                              if x.get("first_gold_rank", 0) > 0)
             if found_g:
@@ -628,11 +785,19 @@ def _write(out_dir: Path, config: dict, metrics: dict, rows: list[dict]) -> None
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "config.json").write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
     (out_dir / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+    if rows and "answer_full" in rows[0]:
+        # 답변 원문. results.csv 는 600자에서 자르므로 재채점은 이 파일로 한다.
+        with (out_dir / "answers.jsonl").open("w", encoding="utf-8") as f:
+            for r in rows:
+                f.write(json.dumps({"id": r.get("id"), "query": r.get("query"),
+                                    "answer": r.get("answer_full") or ""},
+                                   ensure_ascii=False) + "\n")
     if rows:
+        csv_rows = [{k: v for k, v in r.items() if k != "answer_full"} for r in rows]
         with (out_dir / "results.csv").open("w", newline="", encoding="utf-8-sig") as f:
-            w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            w = csv.DictWriter(f, fieldnames=list(csv_rows[0].keys()))
             w.writeheader()
-            w.writerows(rows)
+            w.writerows(csv_rows)
     bad = [r for r in rows if r["label"] not in ("정답", "상한도달")]
     with (out_dir / "failure_cases.jsonl").open("w", encoding="utf-8") as f:
         for r in bad:
@@ -645,7 +810,12 @@ def _write(out_dir: Path, config: dict, metrics: dict, rows: list[dict]) -> None
     for k, v in sorted(metrics["labels"].items(), key=lambda kv: -kv[1]):
         lines.append(f"| {k} | {v} | {metrics['label_rate'][k]:.1%} |")
     lines += ["", "## 지표", "", "| 지표 | 값 |", "|---|---:|"]
-    for k in ("graded_hit", "answer_hit", "answer_hit_exact", "answer_hit_given_evidence",
+    if metrics.get("ungradeable_n"):
+        lines += ["", f"> 채점 기준(정답 또는 required_all)이 없는 문항 "
+                      f"{metrics['ungradeable_n']}건은 graded_hit 분모에서 제외했다. "
+                      f"분모 {metrics.get('graded_hit_n')}건.", ""]
+    for k in ("graded_hit", "graded_hit_n", "required_coverage",
+              "answer_hit", "answer_hit_exact", "answer_hit_given_evidence",
               "evidence_hit", "answer_ceiling",
               "refusal", "numbers_grounded", "has_citation", "validation_passed",
               "context_recall", "context_precision", "context_ap", "mrr", "ndcg_at_10",
@@ -662,7 +832,8 @@ def _write(out_dir: Path, config: dict, metrics: dict, rows: list[dict]) -> None
             lines.append(f"| {band} | {cnt} |")
 
     if metrics.get("by_doc_group"):
-        cols = [c for c in _RATE_KEYS if c in next(iter(metrics["by_doc_group"].values()))]
+        cols = [c for c in (_GRADEABLE_KEYS + _RATE_KEYS)
+                if c in next(iter(metrics["by_doc_group"].values()))]
         lines += ["", "## 공시유형별", "",
                   "| 유형 | n | " + " | ".join(cols) + " | 첫정답등수(중앙) |",
                   "|---" * (len(cols) + 3) + "|"]
@@ -670,6 +841,114 @@ def _write(out_dir: Path, config: dict, metrics: dict, rows: list[dict]) -> None
             cells = " | ".join(str(m.get(c, "")) for c in cols)
             lines.append(f"| {g} | {m['n']} | {cells} | {m.get('first_gold_rank_median', '')} |")
     (out_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+# ------------------------------------------------------------------------ 재채점
+
+_NUM_COLS = frozenset(
+    _RATE_KEYS + _GRADEABLE_KEYS + _OPTIONAL_KEYS + (
+        "elapsed_sec", "gradeable", "n_gold", "n_answer_numbers", "gold_position",
+        "hcx_calls", "retries", "citation_hit", "evidence_hit", "refusal",
+        "required_n", "required_matched", "bonus_n", "bonus_matched",
+        "first_gold_rank", "n_required", "n_covered", "n_acknowledged", "n_silent",
+    ))
+
+
+def _coerce(col: str, raw: str):
+    if col not in _NUM_COLS:
+        return raw
+    v = (raw or "").strip()
+    if v in ("", "None", "null"):
+        return None
+    try:
+        return int(v) if v.lstrip("-").isdigit() else float(v)
+    except ValueError:
+        return raw
+
+
+def _rescore(src: Path, gold_rows: list[dict], out_dir: Path, mode: str) -> int:
+    """이미 받아둔 답변을 다시 채점한다. HCX 0회, 파이프라인도 안 띄운다.
+
+    채점 기준을 고칠 때마다 20분짜리 실행을 반복하지 않으려고 만들었다.
+    답변 원문은 `answers.jsonl` 에서 읽는다 — `results.csv` 의 answer 는
+    600자에서 잘려 있어 서술형 뒤쪽 항목을 놓친다.
+    """
+    csv_path = src / "results.csv"
+    if not csv_path.exists():
+        logger.error("results.csv 가 없다: %s", csv_path)
+        return 2
+
+    full: dict[str, str] = {}
+    ans_path = src / "answers.jsonl"
+    if ans_path.exists():
+        for line in ans_path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                d = json.loads(line)
+                if d.get("id"):
+                    full[str(d["id"])] = d.get("answer") or ""
+                if d.get("query"):
+                    full[d["query"]] = d.get("answer") or ""
+        logger.info("답변 원문 %d건을 answers.jsonl 에서 읽었다", len(full))
+    else:
+        logger.warning("answers.jsonl 이 없다 — results.csv 의 600자 잘린 답변으로 "
+                       "채점한다. 서술형 점수가 실제보다 낮게 나온다.")
+
+    by_id = {str(r.get("id")): r for r in gold_rows if r.get("id")}
+    by_query = {r["query"]: r for r in gold_rows if r.get("query")}
+
+    with csv_path.open(encoding="utf-8-sig") as f:
+        raw_rows = list(csv.DictReader(f))
+    rows, missing_gold = [], 0
+    for raw in raw_rows:
+        r = {k: _coerce(k, v) for k, v in raw.items()}
+        rid, query = str(r.get("id") or ""), r.get("query") or ""
+        gold_row = by_id.get(rid) or by_query.get(query)
+        if gold_row is None:
+            missing_gold += 1
+            rows.append(r)
+            continue
+        answer = full.get(rid) or full.get(query) or (r.get("answer") or "")
+        golds = _gold_answers(gold_row)
+        required = [t for t in (gold_row.get("required_all") or []) if str(t).strip()]
+        any_groups = [g for g in (gold_row.get("required_any") or []) if g]
+        req = (required_any_report(answer, any_groups) if any_groups
+               else required_report(answer, required))
+        bonus = required_report(answer, gold_row.get("bonus_any") or [])
+        if any_groups or required:
+            graded, kind = grade_answer(answer, "", golds, required=required,
+                                        any_groups=any_groups)
+        elif golds:
+            graded, kind = grade_answer(answer, gold_row.get("answer") or "", golds)
+        else:
+            graded, kind = 0, "ungradeable"
+        gradeable = int(bool(golds) or bool(required) or bool(any_groups))
+        hit = _answer_hit(answer, golds)
+        numbers = _answer_numbers(answer)
+        position = _gold_position(answer, golds)
+        refusal = _is_refusal(answer)
+        r.update({
+            "answer": answer.replace("\n", " ")[:600], "answer_full": answer,
+            "gold": golds[0] if golds else "", "n_gold": len(golds),
+            "answer_hit": int(hit),
+            "answer_hit_exact": int(bool(hit) and position == 1 and len(numbers) <= 2),
+            "graded_hit": graded, "gold_kind": kind, "gradeable": gradeable,
+            "required_n": req["n"], "required_matched": req["matched"],
+            "required_coverage": req["coverage"],
+            "required_missing": " / ".join(str(x) for x in req["missing"]),
+            "bonus_n": bonus["n"], "bonus_matched": bonus["matched"],
+            "n_answer_numbers": len(numbers), "gold_position": position,
+            "refusal": int(refusal),
+            "label": _label(bool(graded), bool(r.get("evidence_hit")), refusal,
+                            gradeable=bool(gradeable)),
+        })
+        rows.append(r)
+    if missing_gold:
+        logger.warning("정답셋에서 못 찾은 문항 %d건은 원본 값을 그대로 뒀다", missing_gold)
+
+    metrics = _aggregate(rows, mode)
+    _write(out_dir, {"rescored_from": str(src), "gold_rows": len(gold_rows)}, metrics, rows)
+    logger.info("재채점 완료 -> %s/", out_dir)
+    return 0
 
 
 # --------------------------------------------------------------------------- main
@@ -701,6 +980,9 @@ def main() -> int:
     ap.add_argument("--max-iterations", type=int, default=6)
     ap.add_argument("--no-reranker", action="store_true")
     ap.add_argument("--yes", action="store_true", help="full 모드 대량 실행 승인")
+    ap.add_argument("--rescore", default="",
+                    help="이미 나온 결과 폴더를 다시 채점한다(HCX 0회). "
+                         "예: --rescore results/v2_off4 --out results/v2_off4_regrade")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
 
@@ -711,7 +993,10 @@ def main() -> int:
     # 못했다(전체의 42%). 정답 문장 없이도 항목 커버리지·근거 정확성은 잴 수
     # 있다(open_scoring 모듈). v2 경로에서만 살린다 — v1 은 비교 기준이라
     # 동작을 바꾸지 않는다.
-    unanswered = [r for r in rows if not _gold_answers(r)]
+    # required_all 이 있으면 정답 문장이 없어도 채점된다(서술형 D형).
+    unanswered = [r for r in rows
+                  if not _gold_answers(r) and not r.get("required_all")
+                  and not r.get("required_any")]
     if unanswered and not (args.mode == "full" and args.pipeline == "v2"):
         logger.warning("정답이 비어 있는 %d문항은 제외한다(v2 full 모드에서만 채점)",
                        len(unanswered))
@@ -746,6 +1031,11 @@ def main() -> int:
         return 2
 
     out_dir = Path(args.out or f"results/answers_{args.mode}")
+
+    if args.rescore:
+        # 인덱스도 모델도 안 띄운다. 채점 기준만 다시 적용한다.
+        return _rescore(Path(args.rescore), rows, out_dir, args.mode)
+
     bundle = _load_bundle(args.artifacts, use_reranker=not args.no_reranker)
 
     if args.mode == "retrieval":

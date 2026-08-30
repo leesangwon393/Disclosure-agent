@@ -249,6 +249,40 @@ _COMPARE_WORDS = ("비교", "더 큰", "더 많은", "더 높은", "중 어느",
 _CALC_WORDS = ("증감률", "증가율", "감소율", "성장률", "비율", "CAGR", "합계는",
                "평균", "대비 몇", "얼마나 증가", "얼마나 감소")
 _TIMELINE_WORDS = ("추이", "연도별", "분기별", "시간순", "변화 과정", "이력")
+
+# 공시유형명이 아니라 **개념어**로 묻는 경우. field_schema 는 유형명으로만
+# 매칭하므로 이런 질문은 report_kinds 가 비고, 그러면 정형 채널이 아무것도
+# 조회하지 않는다.
+#
+# 실측 실패(S030~S032, 2026-08-30): "2025년에 실시한 자금조달 내역" ->
+#   report_kinds=[]  facts_executed=False  fact_rows=0
+# 비정형으로 24개 청크를 가져왔지만 정답 문서는 그 안에 없었다.
+# 값은 **부분 문자열 패턴**이다. 명세의 유형명이 `주요사항보고서(전환사채권발행결정)`
+# 처럼 접두어를 달고 있어서 정확한 이름을 적으면 하나도 안 맞는다(실측으로 확인).
+CONCEPT_KINDS: dict[tuple[str, ...], tuple[str, ...]] = {
+    ("자금조달", "자금 조달", "조달 내역", "조달내역"): (
+        "유상증자", "무상증자", "전환사채", "신주인수권부사채", "교환사채",
+        "자본으로인정되는채무증권", "조건부자본증권",
+    ),
+}
+
+
+def expand_concept_kinds(query: str, known: list[str]) -> list[str]:
+    """개념어를 공시유형 목록으로 펼친다. 명세에 실제로 있는 유형만 남긴다.
+
+    한 종류만 잡히면 **오히려 위험하다.** 예를 들어 자금조달 질문에서
+    유상증자만 잡히면 전환사채 문서가 필터에서 잘려 나가, 펼치기 전보다
+    나빠진다. 그래서 부분 문자열로 넓게 잡는다.
+    """
+    q = _nfc(query)
+    out: list[str] = []
+    for words, patterns in CONCEPT_KINDS.items():
+        if not any(w in q for w in words):
+            continue
+        for kind in known:
+            if any(pat in _nfc(kind) for pat in patterns):
+                out.append(kind)
+    return list(dict.fromkeys(out))
 _SUMMARY_WORDS = ("정리해", "요약해", "주요 내용", "핵심", "어떤 내용")
 
 
@@ -367,6 +401,9 @@ class RulePlanBuilder:
             src["periods"] = "rule"
 
         report_kinds = self.schema.match_kinds(q) if self.schema is not None else []
+        if not report_kinds and self.schema is not None:
+            # 유형명이 아니라 개념어로 물은 경우("자금조달 내역")를 펼친다.
+            report_kinds = expand_concept_kinds(q, self.schema.kinds())
         if report_kinds:
             src["report_kinds"] = "rule"
 

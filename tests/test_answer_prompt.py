@@ -101,3 +101,36 @@ def test_unknown_mode_gets_the_safer_middle_budget():
     """모드를 못 정했으면 open 쪽으로 기운다 — 항목이 빠지는 쪽이 더 비싸다."""
     b = answer_token_budget(QueryPlan(answer_mode="unknown"))
     assert 800 < b <= answer_token_budget(QueryPlan(answer_mode="open"))
+
+
+# --------------------------------------------- closed 블록과 공통규칙 4의 충돌
+#
+# 실측 실패(S001, 2026-08-30): 삼성전자 자기주식취득결정 공시가 6건이고
+# 순자산액이 전부 다르다. 같은 프롬프트·같은 근거로
+#   v2_off5 -> 6건을 공시일과 함께 전부 나열 (정답)
+#   v2_off6 -> 최신 1건만 답변          (오답)
+# 공통규칙 4("여러 공시에 있으면 전부 제시")와 closed 10/12("값 하나만,
+# 다른 항목 덧붙이지 마")가 충돌해 어느 쪽을 따를지가 실행마다 갈렸다.
+
+def test_closed_block_defers_to_the_list_all_rule():
+    from disclosure_rag.agent.query_plan import QueryPlan
+    prompt = build_answer_prompt(QueryPlan(answer_mode="closed", task="lookup"))
+    assert "공통규칙 4가" in prompt and "우선" in prompt, (
+        "closed 프롬프트가 '여러 공시면 전부 나열' 예외를 명시해야 한다"
+    )
+    assert "여러 시점" in prompt
+
+
+def test_closed_block_still_forbids_unrelated_fields():
+    """예외를 넣느라 '묻지 않은 항목 금지'가 사라지면 안 된다."""
+    from disclosure_rag.agent.query_plan import QueryPlan
+    prompt = build_answer_prompt(QueryPlan(answer_mode="closed", task="lookup"))
+    assert "묻지 않은 다른 항목" in prompt
+
+
+def test_open_and_mixed_blocks_are_untouched():
+    from disclosure_rag.agent.query_plan import QueryPlan
+    for mode in ("open", "mixed"):
+        prompt = build_answer_prompt(QueryPlan(answer_mode=mode, task="summarize"))
+        assert "(확인되지 않음)" in prompt
+        assert "공통규칙 4가" not in prompt      # closed 전용 문구다

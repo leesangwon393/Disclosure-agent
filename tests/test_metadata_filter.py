@@ -87,9 +87,29 @@ def test_year_month_request_keeps_period_less_docs_by_filing_year():
     assert "p2" not in {c.chunk_id for c in got}, "정기공시는 월까지 정확히 본다"
 
 
-def test_other_year_is_excluded():
-    got = filter_chunks(ALL, RetrievalFilter(periods=["2025"]))
-    assert {c.chunk_id for c in got} == {"p3", "h1"}
+def test_unrelated_year_is_excluded():
+    """어느 해석으로도 안 걸리는 연도는 빠져야 한다."""
+    got = filter_chunks(ALL, RetrievalFilter(periods=["2021"]))
+    assert got == []
+
+
+def test_year_matches_either_fiscal_year_or_filing_year():
+    """한국어 "2025년 사업보고서"는 두 가지로 읽힌다.
+
+        제출연도  2025년에 낸 보고서 = 사업보고서(2024.12)
+        사업연도  2024년을 다룬 보고서
+
+    한쪽만 인정하면 다른 해석의 질문이 **전멸한다.** 실측 실패(S027~S029,
+    2026-08-30): "삼성전자의 2024년 사업보고서"가 가리키는 문서는
+    `사업보고서 (2023.12)` 이고 2024-03-12 제출인데, 사업연도만 보면
+    "2024" 가 안 맞아 정답 문서가 통째로 걸러졌다 — 근거 0건이라 답변
+    자체가 불가능했다. 넓게 통과시키고 순위에 맡긴다.
+    """
+    got = {c.chunk_id for c in filter_chunks(ALL, RetrievalFilter(periods=["2025"]))}
+    assert "p3" in got      # 사업연도 2025-12
+    assert "p1" in got      # 사업연도 2024-12 이지만 2025-03-10 제출
+    assert "h1" in got      # period 없음, 2025 접수
+    assert "p2" not in got  # 2024-03 사업연도, 2024 제출 — 어느 쪽도 2025 아님
 
 
 def test_no_period_filter_returns_everything():

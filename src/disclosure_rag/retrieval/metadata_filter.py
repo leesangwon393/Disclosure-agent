@@ -138,14 +138,25 @@ class RetrievalFilter:
         if not self.periods:
             return True
 
+        # 기준기간(사업연도)과 제출연도를 **둘 다** 후보로 둔다.
+        #
+        # 실측 실패(S027~S029, 2026-08-30): "삼성전자의 2024년 사업보고서"가
+        # 가리키는 문서는 `사업보고서 (2023.12)` 이고 2024-03-12 에 제출됐다.
+        # chunk.period 는 "2023-12" 다. 기준기간만 보면 "2024" 가 안 맞아
+        # **정답 문서가 통째로 걸러진다** — 근거 0건으로 답변 자체가 불가능했다.
+        #
+        # 한국어에서 "2024년 사업보고서"는 제출연도로도, 사업연도로도 읽힌다.
+        # 둘 중 하나만 인정하면 나머지 해석의 질문이 전멸한다. 넓게 통과시키고
+        # 순위(리랭커)에 맡기는 편이 낫다 — 근거가 0건이면 만회할 방법이 없다.
+        candidates: set[str] = set()
         chunk_period = chunk.period
         if chunk_period:
-            candidates = {chunk_period, chunk_period[:4]}
-        else:
-            filing_date = chunk.filing_date or ""
-            if len(filing_date) < 4:
-                return False
-            candidates = {filing_date[:4]}
+            candidates |= {chunk_period, chunk_period[:4]}
+        filing_date = chunk.filing_date or ""
+        if len(filing_date) >= 4:
+            candidates.add(filing_date[:4])
+        if not candidates:
+            return False
 
         for want in self.periods:
             want = (want or "").strip()

@@ -37,8 +37,10 @@ class SpyClient:
 
 
 class FakeDual:
-    def __init__(self, chunks, facts=()):
+    def __init__(self, chunks, facts=(), manifest=()):
         self.chunks, self.facts, self.queries = chunks, list(facts), []
+        # 존재 전수 확인(Stage 3.5)이 읽는다. 비어 있으면 그 단계를 건너뛴다.
+        self.manifest = list(manifest)
 
     def search(self, query, plan, *, k=10, **kw):
         self.queries.append((query, k))
@@ -81,8 +83,9 @@ def registry():
     return EntityRegistry.load(REGISTRY)
 
 
-def make_ask(builder, registry, chunks, facts=(), client=None, **kw):
-    return AskV2(client=client or SpyClient(), dual_retriever=FakeDual(chunks, facts),
+def make_ask(builder, registry, chunks, facts=(), client=None, manifest=(), **kw):
+    return AskV2(client=client or SpyClient(),
+                 dual_retriever=FakeDual(chunks, facts, manifest),
                  plan_builder=builder, registry=registry, **kw)
 
 
@@ -278,3 +281,69 @@ def test_validator_failure_does_not_kill_the_answer(builder, registry):
     out = make_ask(builder, registry, chunks, answer_validator=broken).run(
         "삼성전자의 단일판매ㆍ공급계약체결 공시에 기재된 계약금액은 얼마인가?")
     assert out.stopped_at == "answered" and out.answer
+
+
+# ------------------------------------------------------- 존재 전수 확인 (Stage 3.5)
+#
+# 검색은 상위 k건만 본다. 거기 없다고 '없다'고 말할 수 없어서 모델이
+# "확인할 수 없습니다"로 물러섰다(v2_off4 실측 2문항, 정답은 둘 다 '아니오').
+# manifest 는 전체 목록이라 0건을 근거 있게 말할 수 있다.
+
+def _mrow(corp, nm, dt="20240101", doc_id=None, is_correction=False):
+    return SimpleNamespace(corp_name=corp, report_nm=nm, rcept_dt=dt,
+                           doc_id=doc_id or f"exchange_{dt}800001",
+                           is_correction=is_correction)
+
+
+_HANMI_MANIFEST = [
+    _mrow("한미반도체", "단일판매ㆍ공급계약체결", "20230901"),
+    _mrow("한미반도체", "단일판매ㆍ공급계약체결(자율공시)", "20230612"),
+    _mrow("한미반도체", "주요사항보고서(자기주식취득신탁계약해지결정)", "20240417"),
+]
+
+_EXISTENCE_Q = "한미반도체가 체결한 단일판매·공급계약 중 이후 해지된 계약이 존재하는가?"
+
+
+def test_confirmed_absence_reaches_the_model_with_a_verdict(builder, registry):
+    """근거 0건이어도 전수 확인이 '아니오'면 거부하지 않고 답하게 한다."""
+    ask = make_ask(builder, registry, [], manifest=_HANMI_MANIFEST)
+    out = ask.run(_EXISTENCE_Q)
+
+    assert out.existence.applicable and out.existence.verdict == "아니오"
+    assert out.stopped_at == "answered"          # 거부 게이트를 넘겼다
+    assert ask.client.calls == 1
+    block = out.evidence_pack.prompt_text
+    assert "[전수 확인]" in block and "0건" in block
+
+
+def test_absence_block_sits_before_the_evidence(builder, registry):
+    """긴 근거 뒤에 붙이면 모델이 못 보고 '확인할 수 없습니다'로 돌아간다."""
+    chunks = [make_chunk("c1", "ex_a", "한미반도체", {"계약금액": "1,000"})]
+    out = make_ask(builder, registry, chunks, manifest=_HANMI_MANIFEST).run(_EXISTENCE_Q)
+    text = out.evidence_pack.prompt_text
+    assert text.index("[전수 확인]") < text.index("[EVIDENCE 1]")
+
+
+def test_present_event_is_reported_as_yes(builder, registry):
+    q = "한미반도체가 자기주식취득신탁계약을 해지한 적이 있는가?"
+    out = make_ask(builder, registry, [], manifest=_HANMI_MANIFEST).run(q)
+    assert out.existence.verdict == "예"
+    assert "예" in out.evidence_pack.prompt_text
+
+
+def test_without_manifest_behaviour_is_unchanged(builder, registry):
+    """manifest 가 없으면 이 단계를 통째로 건너뛴다 — 기존 동작 그대로."""
+    ask = make_ask(builder, registry, [])
+    out = ask.run(_EXISTENCE_Q)
+    assert not out.existence.applicable
+    assert out.stopped_at == "abstention_gate"
+    assert ask.client.calls == 0
+
+
+def test_non_existence_question_is_untouched(builder, registry):
+    """값을 묻는 질문에는 전수 확인이 끼어들지 않는다."""
+    chunks = [make_chunk("c1", "ex_a", "삼성전자", {"계약금액": "1,000"})]
+    out = make_ask(builder, registry, chunks, manifest=_HANMI_MANIFEST).run(
+        "삼성전자의 단일판매ㆍ공급계약체결 공시에 기재된 계약금액은 얼마인가?")
+    assert not out.existence.applicable
+    assert "[전수 확인]" not in out.evidence_pack.prompt_text

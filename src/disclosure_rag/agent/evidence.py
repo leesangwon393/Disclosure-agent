@@ -152,7 +152,7 @@ def _mark_aggregate(fact_rows: list[dict], aggregation: str) -> list[str]:
 
 def build_evidence_pack_from_retrieval(
     question: str, chunks_with_scores, *, facts=(), aggregation: str = "none",
-    max_chars: int | None = None,
+    max_chars: int | None = None, scope_note: str = "",
 ) -> EvidencePack:
     """검색 결과에서 Evidence Pack 을 만든다.
 
@@ -168,8 +168,12 @@ def build_evidence_pack_from_retrieval(
         잘린 사실은 프롬프트에 명시해 모델이 '전부 봤다'고 착각하지 않게 한다.
     """
     lines = [f"[USER QUESTION]\n{question}\n"]
+    # 전수 확인 결과는 **근거보다 먼저** 둔다. 뒤에 붙이면 긴 근거에 묻혀서
+    # 모델이 못 보고 "확인할 수 없습니다"로 돌아간다.
+    if scope_note:
+        lines.append(scope_note)
     citations: list[Citation] = []
-    used = len(lines[0])
+    used = sum(len(x) for x in lines)
     truncated = 0
 
     for idx, item in enumerate(chunks_with_scores, start=1):
