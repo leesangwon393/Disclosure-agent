@@ -1,0 +1,49 @@
+{
+  "created_at": "2026-08-23T19:21:45+0900",
+  "token_counter": "BAAI/bge-m3",
+  "bm25_tokenizer": "kiwi",
+  "n_companies": 10,
+  "n_docs": 61,
+  "n_parsed": 61,
+  "n_queries": 262,
+  "gold": "/Users/kim/Desktop/미래에셋/pipeline-kim/eval/gold_passages.jsonl",
+  "note": "모든 조건에 동일한 컨텍스트 헤더가 적용됨(render_search_text). Stage 1 의 혼입 없음.",
+  "results": [
+    {
+      "config": "t600_m1002_r20_grid",
+      "target_tokens": 600,
+      "max_tokens": 1002,
+      "table_style": "grid",
+      "table_max_rows": 20,
+      "n_leaf": 216,
+      "n_parent": 44,
+      "leaf_chars_p50": 950,
+      "leaf_chars_p90": 1583,
+      "leaf_chars_max": 2512,
+      "passage": {
+        "hit@1": 0.5534,
+        "hit@3": 0.8206,
+        "hit@5": 0.9275,
+        "hit@10": 0.9618,
+        "hit@20": 0.9885,
+        "mrr": 0.7059,
+        "ndcg@10": 0.8793
+      },
+      "report": {
+        "hit@1": 0.542,
+        "hit@3": 0.8321,
+        "hit@5": 0.9275,
+        "hit@10": 0.9695,
+        "hit@20": 0.9924,
+        "mrr": 0.704,
+        "ndcg@10": 1.04
+      },
+      "unresolved_queries": 3,
+      "sec": {
+        "chunk": 0.4,
+        "index": 1.2,
+        "search": 0.1
+      }
+    }
+  ]
+}

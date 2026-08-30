@@ -1,0 +1,19 @@
+{
+  "mode": "retrieval",
+  "n": 314,
+  "labels": {
+    "상한도달": 226,
+    "검색실패": 30,
+    "근거만도달": 58
+  },
+  "label_rate": {
+    "상한도달": 0.7197,
+    "검색실패": 0.0955,
+    "근거만도달": 0.1847
+  },
+  "latency_mean_sec": 3.54,
+  "latency_p95_sec": 3.725,
+  "latency_max_sec": 5.433,
+  "evidence_hit": 0.8694,
+  "answer_ceiling": 0.7197
+}

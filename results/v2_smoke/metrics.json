@@ -1,0 +1,27 @@
+{
+  "mode": "full",
+  "n": 5,
+  "labels": {
+    "검색실패": 4,
+    "정답": 1
+  },
+  "label_rate": {
+    "검색실패": 0.8,
+    "정답": 0.2
+  },
+  "latency_mean_sec": 20.23,
+  "latency_p95_sec": 24.63,
+  "latency_max_sec": 35.2,
+  "answer_hit": 0.2,
+  "evidence_hit": 0.2,
+  "refusal": 0.0,
+  "answer_hit_given_evidence": 1.0,
+  "by_doc_group": {
+    "?": {
+      "n": 5,
+      "answer_hit": 0.2,
+      "evidence_hit": 0.2,
+      "refusal": 0.0
+    }
+  }
+}

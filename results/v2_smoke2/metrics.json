@@ -1,0 +1,25 @@
+{
+  "mode": "full",
+  "n": 5,
+  "labels": {
+    "정답": 5
+  },
+  "label_rate": {
+    "정답": 1.0
+  },
+  "latency_mean_sec": 13.03,
+  "latency_p95_sec": 14.24,
+  "latency_max_sec": 17.41,
+  "answer_hit": 1.0,
+  "evidence_hit": 1.0,
+  "refusal": 0.0,
+  "answer_hit_given_evidence": 1.0,
+  "by_doc_group": {
+    "?": {
+      "n": 5,
+      "answer_hit": 1.0,
+      "evidence_hit": 1.0,
+      "refusal": 0.0
+    }
+  }
+}

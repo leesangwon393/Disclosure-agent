@@ -1,0 +1,156 @@
+{
+  "created_at": "2026-08-24T21:28:47+0900",
+  "modes": [
+    "bm25",
+    "dense",
+    "sparse",
+    "facts"
+  ],
+  "n_leaf": 551596,
+  "n_queries": 20,
+  "weights": {
+    "bm25": 0.6,
+    "dense": 0.25,
+    "sparse": 0.15
+  },
+  "results": [
+    {
+      "method": "hybrid_rrf",
+      "passage": {
+        "hit@1": 0.6,
+        "hit@3": 0.7,
+        "hit@5": 0.75,
+        "hit@10": 0.85,
+        "hit@20": 0.95,
+        "mrr": 0.6747,
+        "ndcg@10": 0.682
+      },
+      "report": {
+        "hit@1": 0.45,
+        "hit@3": 0.75,
+        "hit@5": 0.8,
+        "hit@10": 0.9,
+        "hit@20": 0.9,
+        "mrr": 0.6,
+        "ndcg@10": 0.6516
+      },
+      "latency_mean_sec": 0.95,
+      "latency_p95_sec": 1.8152
+    },
+    {
+      "method": "bm25",
+      "passage": {
+        "hit@1": 0.6,
+        "hit@3": 0.6,
+        "hit@5": 0.6,
+        "hit@10": 0.7,
+        "hit@20": 0.75,
+        "mrr": 0.6158,
+        "ndcg@10": 0.6103
+      },
+      "report": {
+        "hit@1": 0.55,
+        "hit@3": 0.6,
+        "hit@5": 0.6,
+        "hit@10": 0.7,
+        "hit@20": 0.75,
+        "mrr": 0.5816,
+        "ndcg@10": 0.5625
+      },
+      "latency_mean_sec": 0.0542,
+      "latency_p95_sec": 0.0803
+    },
+    {
+      "method": "hybrid_weighted",
+      "passage": {
+        "hit@1": 0.5,
+        "hit@3": 0.6,
+        "hit@5": 0.65,
+        "hit@10": 0.75,
+        "hit@20": 0.85,
+        "mrr": 0.5803,
+        "ndcg@10": 0.5883
+      },
+      "report": {
+        "hit@1": 0.3,
+        "hit@3": 0.55,
+        "hit@5": 0.6,
+        "hit@10": 0.75,
+        "hit@20": 0.8,
+        "mrr": 0.4418,
+        "ndcg@10": 0.5135
+      },
+      "latency_mean_sec": 0.8264,
+      "latency_p95_sec": 1.0383
+    },
+    {
+      "method": "dense",
+      "passage": {
+        "hit@1": 0.45,
+        "hit@3": 0.6,
+        "hit@5": 0.65,
+        "hit@10": 0.7,
+        "hit@20": 0.8,
+        "mrr": 0.5448,
+        "ndcg@10": 0.5709
+      },
+      "report": {
+        "hit@1": 0.25,
+        "hit@3": 0.45,
+        "hit@5": 0.55,
+        "hit@10": 0.65,
+        "hit@20": 0.8,
+        "mrr": 0.3739,
+        "ndcg@10": 0.4202
+      },
+      "latency_mean_sec": 1.945,
+      "latency_p95_sec": 0.8383
+    },
+    {
+      "method": "best+rerank(top50)",
+      "passage": {
+        "hit@1": 0.4,
+        "hit@3": 0.6,
+        "hit@5": 0.7,
+        "hit@10": 0.85,
+        "hit@20": 0.9,
+        "mrr": 0.5178,
+        "ndcg@10": 0.6117
+      },
+      "report": {
+        "hit@1": 0.2,
+        "hit@3": 0.6,
+        "hit@5": 0.7,
+        "hit@10": 0.8,
+        "hit@20": 0.9,
+        "mrr": 0.4186,
+        "ndcg@10": 0.5327
+      },
+      "latency_mean_sec": 4.3366,
+      "latency_p95_sec": 5.7297
+    },
+    {
+      "method": "sparse",
+      "passage": {
+        "hit@1": 0.2,
+        "hit@3": 0.2,
+        "hit@5": 0.35,
+        "hit@10": 0.5,
+        "hit@20": 0.75,
+        "mrr": 0.269,
+        "ndcg@10": 0.308
+      },
+      "report": {
+        "hit@1": 0.25,
+        "hit@3": 0.4,
+        "hit@5": 0.55,
+        "hit@10": 0.6,
+        "hit@20": 0.65,
+        "mrr": 0.3636,
+        "ndcg@10": 0.3949
+      },
+      "latency_mean_sec": 0.0863,
+      "latency_p95_sec": 0.155
+    }
+  ]
+}

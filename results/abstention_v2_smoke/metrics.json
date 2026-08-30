@@ -1,0 +1,30 @@
+{
+  "n": 1,
+  "n_predicted": 1,
+  "abstention_accuracy": 1.0,
+  "action_accuracy": 1.0,
+  "predicted_actions": {
+    "refuse": 1
+  },
+  "by_reason": {
+    "hard_out": {
+      "n": 1,
+      "abstention_accuracy": 1.0,
+      "action_accuracy": 1.0,
+      "failed_ids": []
+    }
+  },
+  "false_refusal_rate": 0.0,
+  "answerable_n": 1,
+  "false_refusal_n": 0,
+  "false_refusal_ids": [],
+  "stopped_at": {
+    "scope_gate": 1
+  },
+  "hcx_calls_on_abstention_set": 0,
+  "hcx_calls_on_pipeline_refusals": 0,
+  "hcx_calls_on_answerable_set": 0,
+  "errors": 0,
+  "answerable_errors": 1,
+  "elapsed_sec": 257.07
+}

@@ -1,0 +1,31 @@
+{
+  "mode": "full",
+  "n": 22,
+  "labels": {
+    "정답": 6,
+    "답변실패": 11,
+    "검색실패": 3,
+    "거부(근거있음)": 2
+  },
+  "label_rate": {
+    "정답": 0.2727,
+    "답변실패": 0.5,
+    "검색실패": 0.1364,
+    "거부(근거있음)": 0.0909
+  },
+  "latency_mean_sec": 18.75,
+  "latency_p95_sec": 29.2,
+  "latency_max_sec": 46.25,
+  "answer_hit": 0.2727,
+  "evidence_hit": 0.8636,
+  "refusal": 0.0909,
+  "answer_hit_given_evidence": 0.3158,
+  "by_doc_group": {
+    "?": {
+      "n": 22,
+      "answer_hit": 0.2727,
+      "evidence_hit": 0.8636,
+      "refusal": 0.0909
+    }
+  }
+}

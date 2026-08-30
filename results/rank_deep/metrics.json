@@ -1,0 +1,80 @@
+{
+  "mode": "retrieval",
+  "n": 286,
+  "labels": {
+    "상한도달": 272,
+    "검색실패": 4,
+    "근거만도달": 10
+  },
+  "label_rate": {
+    "상한도달": 0.951,
+    "검색실패": 0.014,
+    "근거만도달": 0.035
+  },
+  "latency_mean_sec": 0.14,
+  "latency_p95_sec": 0.154,
+  "latency_max_sec": 1.983,
+  "evidence_hit": 0.979,
+  "answer_ceiling": 0.951,
+  "context_recall": 0.9744,
+  "context_precision": 0.0797,
+  "context_ap": 0.5331,
+  "mrr": 0.5503,
+  "ndcg_at_10": 0.6081,
+  "first_gold_rank_found_n": 280,
+  "first_gold_rank_median": 2,
+  "first_gold_rank_p90": 13,
+  "first_gold_rank_hist": {
+    "1": 113,
+    "2-3": 73,
+    "4-10": 63,
+    "11+": 31,
+    "미발견": 6
+  },
+  "by_doc_group": {
+    "exchange": {
+      "n": 42,
+      "evidence_hit": 0.9524,
+      "answer_ceiling": 0.9524,
+      "context_recall": 0.9405,
+      "context_precision": 0.0114,
+      "context_ap": 0.5412,
+      "mrr": 0.6049,
+      "ndcg_at_10": 0.5954,
+      "first_gold_rank_median": 1
+    },
+    "holding": {
+      "n": 1,
+      "evidence_hit": 1.0,
+      "answer_ceiling": 1.0,
+      "context_recall": 1.0,
+      "context_precision": 0.02,
+      "context_ap": 1.0,
+      "mrr": 1.0,
+      "ndcg_at_10": 1.0,
+      "first_gold_rank_median": 1
+    },
+    "major": {
+      "n": 57,
+      "evidence_hit": 0.9298,
+      "answer_ceiling": 0.9649,
+      "context_recall": 0.9152,
+      "context_precision": 0.0217,
+      "context_ap": 0.6527,
+      "mrr": 0.691,
+      "ndcg_at_10": 0.6945,
+      "first_gold_rank_median": 1
+    },
+    "periodic": {
+      "n": 186,
+      "evidence_hit": 1.0,
+      "answer_ceiling": 0.9462,
+      "context_recall": 1.0,
+      "context_precision": 0.1133,
+      "context_ap": 0.4921,
+      "mrr": 0.4924,
+      "ndcg_at_10": 0.5825,
+      "first_gold_rank_median": 3
+    }
+  }
+}

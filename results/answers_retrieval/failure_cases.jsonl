@@ -1,0 +1,88 @@
+{"id": 6, "query": "현대모비스 직전사업연도말이후정기주주총회에서결의된이익배당금액및관련이익준비금이(가) 어떻게 돼?", "company": "현대모비스", "gold": "316,206,358,200", "n_gold": 3, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.418}
+{"id": 8, "query": "셀트리온의 주요사항보고서(자기주식취득결정)에서 직전사업연도말이후자기주식취득금액 알려줘", "company": "셀트리온", "gold": "78,147,033,240", "n_gold": 2, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.39}
+{"id": 15, "query": "셀트리온 순자산액이(가) 어떻게 돼?", "company": "셀트리온", "gold": "17,040,573,155,434", "n_gold": 1, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.4}
+{"id": 21, "query": "셀트리온 직전사업연도말이후자기주식처분시처분주식의취득원가이(가) 어떻게 돼?", "company": "셀트리온", "gold": "1,031,296,937,692", "n_gold": 1, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.405}
+{"id": 24, "query": "한미반도체 직전사업연도까지적립된자본준비금과이익준비금의합계액이(가) 어떻게 돼?", "company": "한미반도체", "gold": "62,740,283,188", "n_gold": 1, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.364}
+{"id": 25, "query": "한미반도체 주요사항보고서(자기주식취득신탁계약체결결정) 대통령령이정하는미실현이익 얼마야?", "company": "한미반도체", "gold": "211,505,740,503", "n_gold": 1, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.404}
+{"id": 39, "query": "LG씨엔에스 채무상환자금이(가) 어떻게 돼?", "company": "LG씨엔에스", "gold": "160,000,000,000", "n_gold": 1, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.541}
+{"id": 42, "query": "LG유플러스 직전사업연도까지적립된자본준비금과이익준비금의합계액이(가) 어떻게 돼?", "company": "LG유플러스", "gold": "1,072,017,276,697", "n_gold": 1, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.431}
+{"id": 43, "query": "LG유플러스 주요사항보고서(자기주식취득신탁계약체결결정) 대통령령이정하는미실현이익 얼마야?", "company": "LG유플러스", "gold": "8,133,138,515", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.398}
+{"id": 45, "query": "LG유플러스 직전사업연도말이후정기주주총회에서결의된이익배당금액및관련이익준비금이(가) 어떻게 돼?", "company": "LG유플러스", "gold": "199,870,183,680", "n_gold": 1, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.401}
+{"id": 46, "query": "LG유플러스 주요사항보고서(자기주식취득신탁계약체결결정) 직전사업연도말이후이사회에서결의된분기ㆍ중간배당금액및관련이익준비금 얼마야?", "company": "LG유플러스", "gold": "107,457,088,000", "n_gold": 1, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.411}
+{"id": 48, "query": "한미반도체 시작일이(가) 어떻게 돼?", "company": "한미반도체", "gold": "2025-08-01", "n_gold": 4, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.092}
+{"id": 63, "query": "SK하이닉스 이사회결의일이(가) 어떻게 돼?", "company": "SK하이닉스", "gold": "2024-04-24", "n_gold": 3, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.421}
+{"id": 78, "query": "삼성중공업 정정일자이(가) 어떻게 돼?", "company": "삼성중공업", "gold": "2024-04-08", "n_gold": 1, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.497}
+{"id": 79, "query": "삼성중공업 [기재정정]단일판매ㆍ공급계약체결 정정관련공시서류제출일 얼마야?", "company": "삼성중공업", "gold": "2024-01-02", "n_gold": 1, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.549}
+{"id": 99, "query": "LG유플러스 이사회결의일이(가) 어떻게 돼?", "company": "LG유플러스", "gold": "2025-04-29", "n_gold": 1, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.493}
+{"id": 11, "query": "한미반도체의 사업보고서 (2025.12)에서 장기보증금 알려줘", "company": "한미반도체", "gold": "665,178", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.521}
+{"id": 25, "query": "삼성중공업 반기보고서 (2023.06) 자산총계 얼마야?", "company": "삼성중공업", "gold": "448,424,507", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.559}
+{"id": 26, "query": "삼성중공업의 반기보고서 (2023.06)에서 부채총계 알려줘", "company": "삼성중공업", "gold": "93,674,903", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.866}
+{"id": 27, "query": "삼성중공업 자본총계이(가) 어떻게 돼?", "company": "삼성중공업", "gold": "354,749,604", "n_gold": 2, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.63}
+{"id": 28, "query": "삼성중공업 반기보고서 (2023.06) 매출액 얼마야?", "company": "삼성중공업", "gold": "302,231,360", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.616}
+{"id": 29, "query": "삼성중공업의 반기보고서 (2023.06)에서 영업이익 알려줘", "company": "삼성중공업", "gold": "43,376,630", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.574}
+{"id": 30, "query": "삼성중공업 당기순이익이(가) 어떻게 돼?", "company": "삼성중공업", "gold": "55,654,077", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.571}
+{"id": 40, "query": "현대글로비스 [기재정정]사업보고서 (2023.12) 전기공사업 얼마야?", "company": "현대글로비스", "gold": "2023년 03월 29일", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.548}
+{"id": 45, "query": "시프트업 기말이(가) 어떻게 돼?", "company": "시프트업", "gold": "73,619,035", "n_gold": 1, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.732}
+{"id": 52, "query": "SK하이닉스 분기보고서 (2024.03) 유동소계 얼마야?", "company": "SK하이닉스", "gold": "376,546", "n_gold": 4, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.522}
+{"id": 54, "query": "SK하이닉스 합계이(가) 어떻게 돼?", "company": "SK하이닉스", "gold": "814,983", "n_gold": 4, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.534}
+{"id": 55, "query": "셀트리온 분기보고서 (2024.03) 자산 얼마야?", "company": "셀트리온", "gold": "384,059,833", "n_gold": 3, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.603}
+{"id": 56, "query": "셀트리온의 분기보고서 (2024.03)에서 부채 알려줘", "company": "셀트리온", "gold": "12,301,673", "n_gold": 3, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.854}
+{"id": 57, "query": "셀트리온 자본이(가) 어떻게 돼?", "company": "셀트리온", "gold": "371,758,159", "n_gold": 3, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.537}
+{"id": 60, "query": "셀트리온 소계이(가) 어떻게 돼?", "company": "셀트리온", "gold": "173,164,311", "n_gold": 3, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.568}
+{"id": 61, "query": "셀트리온 분기보고서 (2024.03) 순손익 얼마야?", "company": "셀트리온", "gold": "2,316,929", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.604}
+{"id": 65, "query": "현대글로비스의 [기재정정]사업보고서 (2023.12)에서 예금잔액 알려줘", "company": "현대글로비스", "gold": "1,091,801,335", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.546}
+{"id": 66, "query": "현대글로비스 현금성자산으로분류된단기투자자산이(가) 어떻게 돼?", "company": "현대글로비스", "gold": "1,199,626,203", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.542}
+{"id": 67, "query": "현대글로비스 [기재정정]사업보고서 (2023.12) 현금및현금성자산합계 얼마야?", "company": "현대글로비스", "gold": "2,290,825,258", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.561}
+{"id": 71, "query": "현대글로비스의 [기재정정]사업보고서 (2023.12)에서 유동금융리스채권 알려줘", "company": "현대글로비스", "gold": "11,346,924", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.538}
+{"id": 72, "query": "현대글로비스 단기대여금이(가) 어떻게 돼?", "company": "현대글로비스", "gold": "1,610,518", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.523}
+{"id": 75, "query": "현대글로비스 비유동금융리스채권이(가) 어떻게 돼?", "company": "현대글로비스", "gold": "6,191,775", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.534}
+{"id": 78, "query": "현대모비스 수익이(가) 어떻게 돼?", "company": "현대모비스", "gold": "22,027,539", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.514}
+{"id": 81, "query": "현대모비스 제품이(가) 어떻게 돼?", "company": "현대모비스", "gold": "233,186", "n_gold": 2, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.516}
+{"id": 83, "query": "현대모비스의 반기보고서 (2024.06)에서 원재료 알려줘", "company": "현대모비스", "gold": "1,938,005", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.589}
+{"id": 86, "query": "현대모비스의 반기보고서 (2024.06)에서 매출채권외의유동채권 알려줘", "company": "현대모비스", "gold": "705,564", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.592}
+{"id": 91, "query": "현대모비스 반기보고서 (2024.06) 순확정급여자산 얼마야?", "company": "현대모비스", "gold": "107,789", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.542}
+{"id": 93, "query": "현대모비스 취득,유형자산이(가) 어떻게 돼?", "company": "현대모비스", "gold": "1,059,931", "n_gold": 2, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.735}
+{"id": 103, "query": "LG유플러스 [기재정정]사업보고서 (2023.12) 기초 얼마야?", "company": "LG유플러스", "gold": "1,631,321", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.594}
+{"id": 104, "query": "LG유플러스의 [기재정정]사업보고서 (2023.12)에서 인식 알려줘", "company": "LG유플러스", "gold": "1,756,125", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.601}
+{"id": 105, "query": "LG유플러스 기말이(가) 어떻게 돼?", "company": "LG유플러스", "gold": "1,681,918", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.552}
+{"id": 106, "query": "LG유플러스 [기재정정]사업보고서 (2023.12) 단기예수금 얼마야?", "company": "LG유플러스", "gold": "391,718", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.548}
+{"id": 111, "query": "LG씨엔에스 제도자산에불입될것으로예상되는금액이(가) 어떻게 돼?", "company": "LG씨엔에스", "gold": "2,905,033", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.629}
+{"id": 113, "query": "디앤디파마텍의 사업보고서 (2024.12)에서 발행일자 알려줘", "company": "디앤디파마텍", "gold": "2020년 1월 30일", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.567}
+{"id": 114, "query": "디앤디파마텍 합계이(가) 어떻게 돼?", "company": "디앤디파마텍", "gold": "46,697,946", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.548}
+{"id": 118, "query": "SK하이닉스 분기보고서 (2024.03) 차입금 얼마야?", "company": "SK하이닉스", "gold": "29,505,907", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.716}
+{"id": 119, "query": "SK하이닉스의 분기보고서 (2024.03)에서 미수금 알려줘", "company": "SK하이닉스", "gold": "288,624", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.628}
+{"id": 120, "query": "SK하이닉스 장기대여금이(가) 어떻게 돼?", "company": "SK하이닉스", "gold": "241,030", "n_gold": 2, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.702}
+{"id": 124, "query": "SK하이닉스 분기보고서 (2024.03) 계약자산 얼마야?", "company": "SK하이닉스", "gold": "115,460", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.587}
+{"id": 126, "query": "SK하이닉스 기초장부금액이(가) 어떻게 돼?", "company": "SK하이닉스", "gold": "52,704,853", "n_gold": 2, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.553}
+{"id": 131, "query": "삼성중공업의 사업보고서 (2023.12)에서 합계 알려줘", "company": "삼성중공업", "gold": "583,811,700", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.595}
+{"id": 132, "query": "삼성중공업 원가기준투입법적용계약이(가) 어떻게 돼?", "company": "삼성중공업", "gold": "1,451,233,904", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.563}
+{"id": 133, "query": "삼성중공업 사업보고서 (2023.12) 기타 얼마야?", "company": "삼성중공업", "gold": "894,329", "n_gold": 2, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.556}
+{"id": 138, "query": "셀트리온 계약체결일이(가) 어떻게 돼?", "company": "셀트리온", "gold": "2024.01.18", "n_gold": 1, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.535}
+{"id": 140, "query": "셀트리온의 분기보고서 (2024.03)에서 합계 알려줘", "company": "셀트리온", "gold": "201,836,994", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.539}
+{"id": 148, "query": "현대모비스 반기보고서 (2024.06) 유동계약자산외의유동미수수익 얼마야?", "company": "현대모비스", "gold": "109,970", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.561}
+{"id": 149, "query": "현대모비스의 반기보고서 (2024.06)에서 유동선급금 알려줘", "company": "현대모비스", "gold": "108,871", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.575}
+{"id": 150, "query": "현대모비스 유동선급비용이(가) 어떻게 돼?", "company": "현대모비스", "gold": "107,786", "n_gold": 1, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.541}
+{"id": 165, "query": "시프트업 부여일이(가) 어떻게 돼?", "company": "시프트업", "gold": "2024-05-17", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.523}
+{"id": 168, "query": "시프트업 미지급주식등의총수이(가) 어떻게 돼?", "company": "시프트업", "gold": "35,000주", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.58}
+{"id": 170, "query": "LG씨엔에스의 사업보고서 (2024.12)에서 자본금 알려줘", "company": "LG씨엔에스", "gold": "47,198,411,000", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.536}
+{"id": 172, "query": "LG씨엔에스 사업보고서 (2024.12) 유동자산 얼마야?", "company": "LG씨엔에스", "gold": "5,127,997", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 4.165}
+{"id": 173, "query": "LG씨엔에스의 사업보고서 (2024.12)에서 현금및현금성자산 알려줘", "company": "LG씨엔에스", "gold": "2,339,527", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.593}
+{"id": 174, "query": "LG씨엔에스 유동금융자산이(가) 어떻게 돼?", "company": "LG씨엔에스", "gold": "1,805,212", "n_gold": 1, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.604}
+{"id": 175, "query": "LG씨엔에스 사업보고서 (2024.12) 기타유동자산 얼마야?", "company": "LG씨엔에스", "gold": "983,259", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.569}
+{"id": 176, "query": "LG씨엔에스의 사업보고서 (2024.12)에서 비유동자산 알려줘", "company": "LG씨엔에스", "gold": "2,762,694", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.575}
+{"id": 177, "query": "LG씨엔에스 관계기업주식이(가) 어떻게 돼?", "company": "LG씨엔에스", "gold": "223,854", "n_gold": 1, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.587}
+{"id": 178, "query": "LG씨엔에스 사업보고서 (2024.12) 유무형자산 얼마야?", "company": "LG씨엔에스", "gold": "2,256,108", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.56}
+{"id": 179, "query": "LG씨엔에스의 사업보고서 (2024.12)에서 비유동금융자산 알려줘", "company": "LG씨엔에스", "gold": "204,295", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.556}
+{"id": 180, "query": "LG씨엔에스 유동부채이(가) 어떻게 돼?", "company": "LG씨엔에스", "gold": "1,514,330", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.562}
+{"id": 181, "query": "LG씨엔에스 사업보고서 (2024.12) 유동금융부채 얼마야?", "company": "LG씨엔에스", "gold": "1,163,450", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.559}
+{"id": 182, "query": "LG씨엔에스의 사업보고서 (2024.12)에서 기타유동부채 알려줘", "company": "LG씨엔에스", "gold": "350,879", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.561}
+{"id": 183, "query": "LG씨엔에스 비유동부채이(가) 어떻게 돼?", "company": "LG씨엔에스", "gold": "1,016,591", "n_gold": 1, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.531}
+{"id": 185, "query": "LG씨엔에스의 사업보고서 (2024.12)에서 기타비유동부채 알려줘", "company": "LG씨엔에스", "gold": "383,471", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.567}
+{"id": 187, "query": "LG씨엔에스 사업보고서 (2024.12) 지배주주지분 얼마야?", "company": "LG씨엔에스", "gold": "2,950,447", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.571}
+{"id": 192, "query": "삼성중공업 하나은행외15이(가) 어떻게 돼?", "company": "삼성중공업", "gold": "2,658,230", "n_gold": 1, "evidence_hit": 0, "answer_ceiling": 0, "label": "검색실패", "elapsed_sec": 3.636}
+{"id": 193, "query": "삼성중공업 반기보고서 (2023.06) 하나은행외10 얼마야?", "company": "삼성중공업", "gold": "3,142,631", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.667}
+{"id": 196, "query": "디앤디파마텍 사업보고서 (2024.12) 기초 얼마야?", "company": "디앤디파마텍", "gold": "280,471", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.559}
+{"id": 197, "query": "디앤디파마텍의 사업보고서 (2024.12)에서 만기일자 알려줘", "company": "디앤디파마텍", "gold": "2026-04-18", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.561}
+{"id": 207, "query": "삼성중공업 현금이(가) 어떻게 돼?", "company": "삼성중공업", "gold": "176,718", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.537}
+{"id": 209, "query": "삼성중공업의 사업보고서 (2023.12)에서 파생상품평가손익 알려줘", "company": "삼성중공업", "gold": "285,414", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.576}
+{"id": 211, "query": "삼성중공업 사업보고서 (2023.12) 원재료 얼마야?", "company": "삼성중공업", "gold": "465,486,330", "n_gold": 1, "evidence_hit": 1, "answer_ceiling": 0, "label": "근거만도달", "elapsed_sec": 3.577}

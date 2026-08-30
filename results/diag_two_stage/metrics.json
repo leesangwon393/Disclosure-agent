@@ -1,0 +1,23 @@
+{
+  "n": 80,
+  "k": 12,
+  "reranker": true,
+  "results": {
+    "A_필터없음": {
+      "evidence_hit": 0.875,
+      "answer_ceiling": 0.8125
+    },
+    "B_옛규칙+회사필터": {
+      "evidence_hit": 0.75,
+      "answer_ceiling": 0.6
+    },
+    "C_새규칙+회사필터": {
+      "evidence_hit": 0.8875,
+      "answer_ceiling": 0.85
+    },
+    "D_2단계검색": {
+      "evidence_hit": 0.7125,
+      "answer_ceiling": 0.7625
+    }
+  }
+}

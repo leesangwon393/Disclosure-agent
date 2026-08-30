@@ -1,0 +1,11 @@
+{
+  "gold": "eval/gold_passages_clean.jsonl",
+  "artifacts": "artifacts_v2",
+  "mode": "retrieval",
+  "k": 10,
+  "limit": 0,
+  "sample": 0,
+  "seed": 20260830,
+  "reranker": true,
+  "max_iterations": 6
+}
