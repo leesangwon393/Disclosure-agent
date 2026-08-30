@@ -119,3 +119,38 @@ def test_no_period_filter_returns_everything():
 def test_period_filter_combines_with_other_filters():
     got = filter_chunks(ALL, RetrievalFilter(periods=["2024"], doc_groups=["periodic"]))
     assert {c.chunk_id for c in got} == {"p1", "p2"}
+
+
+# --- 정정본만 보는 조건 -------------------------------------------------------
+#
+# 실측 실패(S001, 2026-08-30): "삼성전자의 [기재정정]주요사항보고서
+# (자기주식취득결정)에 기재된 순자산액은?" — 해당 공시 6건 중 [기재정정]은
+# 2건인데, latest_only 가 정정본이 아닌 최신 문서를 골라 그 값을 답했다.
+# 질문에 붙은 표시를 검색 조건으로 안 쓰고 있었다.
+
+def _cc(cid: str, *, is_correction: bool) -> ChunkSchema:
+    return ChunkSchema(
+        chunk_id=cid, report_id="r_" + cid, text="본문", raw_text="본문",
+        company="삼성전자", filing_date="20240101", report_type="major",
+        is_correction=is_correction,
+    )
+
+
+CORR = _cc("corr", is_correction=True)
+ORIG = _cc("orig", is_correction=False)
+
+
+def test_corrections_only_keeps_just_the_corrected_filings():
+    got = filter_chunks([CORR, ORIG], RetrievalFilter(corrections_only=True))
+    assert {c.chunk_id for c in got} == {"corr"}
+
+
+def test_corrections_only_is_off_by_default():
+    got = filter_chunks([CORR, ORIG], RetrievalFilter())
+    assert len(got) == 2
+
+
+def test_corrections_only_combines_with_other_conditions():
+    got = filter_chunks([CORR, ORIG],
+                        RetrievalFilter(corrections_only=True, companies=["없는회사"]))
+    assert got == []

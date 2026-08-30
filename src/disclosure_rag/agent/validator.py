@@ -40,7 +40,13 @@ from disclosure_rag.agent.evidence import EvidencePack
 from disclosure_rag.entity.entity_extractor import ExtractedEntities
 
 _NUMBER_PAT = re.compile(r"\d[\d,]*\.?\d*")
-_APPROX_PAREN_PAT = re.compile(r"\(약[^)]*\)")
+# 괄호 안 환산 표기는 통째로 검증에서 뺀다.
+# 예전엔 `(약 …)` 만 뺐는데, 프롬프트 규칙 2번은 "원문 숫자를 먼저 쓰고
+# 괄호로 덧붙이세요" 라고만 하지 '약' 을 쓰라고 하지 않는다. 그래서
+# **규칙을 정확히 지킨 답변이 검증에서 탈락**했다(2026-08-31 재현:
+# "224,787,773,988,054원 (224조 7,877억원)" -> ungrounded {'224','7877'}).
+# suite_v1 S001 의 채점 항목에 "단위 표기"가 있어 오히려 권장되는 형태다.
+_APPROX_PAREN_PAT = re.compile(r"\((?:약\s*)?[^)]*?(?:조|억|만|천|백만|십억|%|퍼센트)[^)]*\)")
 _DOC_ID_PAT = re.compile(r"\b(?:periodic|major|exchange|holding)_\d{10,}\b")
 # "2025년" "2025 년" "2025년도" — 기간 지정이지 새로운 수치 주장이 아니다.
 _YEAR_CONTEXT_PAT = re.compile(r"\b(19\d{2}|20\d{2})\s*(?=년|년도|연도|분기|회계)")

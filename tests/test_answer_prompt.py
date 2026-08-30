@@ -61,9 +61,25 @@ def test_compare_forbids_a_conclusion_from_one_side():
     assert "한쪽 대상의 근거가 없으면 결론을 내지 말고" in p
 
 
-def test_calculate_forbids_mental_arithmetic():
+def test_calculate_block_does_not_point_at_a_block_that_never_exists():
+    """예전 문구는 "계산 결과는 이미 [TOOL RESULT]에 있습니다" 였다.
+
+    신 파이프라인은 도구를 호출하지 않아 `[TOOL RESULT]` 를 **한 번도 만들지
+    않는다.** "계산하지 마라 + 계산 결과 없음" 이 되어 답변이 막힌다.
+    """
     p = build_answer_prompt(QueryPlan(answer_mode="closed", task="calculate"))
-    assert "직접 암산하지 마세요" in p
+    assert "[TOOL RESULT]" not in p
+    assert "근거에 없는 수를 만들어 넣지 마세요" in p
+    assert "피연산자" in p
+
+
+def test_prompt_never_references_a_nonexistent_block():
+    """프롬프트가 허용·참조하는 블록은 실제로 조립되는 것뿐이어야 한다."""
+    from disclosure_rag.agent.query_plan import TASKS, ANSWER_MODES
+    for mode in ANSWER_MODES:
+        for task in TASKS:
+            p = build_answer_prompt(QueryPlan(answer_mode=mode, task=task))
+            assert "[TOOL RESULT]" not in p, (mode, task)
 
 
 def test_count_requires_listing_what_was_counted():
@@ -134,3 +150,44 @@ def test_open_and_mixed_blocks_are_untouched():
         prompt = build_answer_prompt(QueryPlan(answer_mode=mode, task="summarize"))
         assert "(확인되지 않음)" in prompt
         assert "공통규칙 4가" not in prompt      # closed 전용 문구다
+
+
+# --------------------------------------------------- 조립 후 번호 (2026-08-31)
+#
+# 블록마다 번호를 하드코딩해 두니 조합에 따라 구멍이 났다:
+#   closed/lookup/max -> 1..13, 17, 18   (14,15,16 없음)
+#   unknown/count/max -> 1..9, 14, 17,18 (10~13,15,16 없음)
+# 번호가 비면 모델이 앞 규칙을 못 봤다고 여길 수 있고, 번호로 교차참조하는
+# 규칙("공통규칙 4가 우선")도 흔들린다.
+
+def test_rule_numbers_are_contiguous_in_every_combination():
+    import re
+    from disclosure_rag.agent.query_plan import ANSWER_MODES, TASKS
+    for mode in ANSWER_MODES:
+        for task in TASKS:
+            for agg in ("none", "max", "min"):
+                p = build_answer_prompt(
+                    QueryPlan(answer_mode=mode, task=task, aggregation=agg))
+                nums = [int(m.group(1)) for m in re.finditer(r"^\s*(\d+)[.]", p, re.M)]
+                assert nums == list(range(1, len(nums) + 1)), (mode, task, agg, nums)
+
+
+def test_unknown_mode_still_gets_a_shape_block():
+    """모드를 못 정했다고 블록을 통째로 빼면 10~13번이 사라진다."""
+    p = build_answer_prompt(QueryPlan(answer_mode="unknown", task="lookup"))
+    assert "(확인되지 않음)" in p        # open 쪽으로 붙인다
+
+
+def test_aggregation_rule_outranks_the_list_all_rule():
+    """closed 13번(전부 나열)과 집계 규칙이 충돌하면 집계가 이겨야 한다."""
+    p = build_answer_prompt(
+        QueryPlan(answer_mode="closed", task="compare", aggregation="max"))
+    assert "'전부 나열' 규칙보다 우선합니다" in p
+    assert "이 13번보다 우선합니다" in p
+
+
+def test_evidence_whitelist_includes_every_block_we_actually_build():
+    """공통규칙 3번이 허용하는 블록 목록에 [FACT]·[전수 확인]이 있어야 한다."""
+    p = build_answer_prompt(QueryPlan(answer_mode="closed", task="lookup"))
+    for block in ("[EVIDENCE]", "[FACT]", "[전수 확인]"):
+        assert block in p, block

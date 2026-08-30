@@ -46,7 +46,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 logger = logging.getLogger("score_answers")
 
-_REFUSAL = ("확인할 수 없습니다", "확인되지 않습니다", "찾을 수 없습니다", "확인이 어렵습니다")
+# 파이프라인이 실제로 내보내는 거부 문구. **세 곳(abstention/scope_gate/ask)의
+# 문구를 전부 여기 반영해야 한다** — 2026-08-31 대조에서 8종 중 1종만 잡히고
+# 있었다. 그 결과 HCX 를 안 부르고 거부한 문항이 '오답'으로 분류됐고,
+# `_verdict` 도 "불명"을 돌려줘 예/아니오 채점이 어긋났다.
+_REFUSAL = (
+    "확인할 수 없습니다", "확인되지 않습니다", "찾을 수 없습니다", "확인이 어렵습니다",
+    # abstention.py
+    "확인할 수 없어 결론을 내지 않습니다", "확인할 수 없어 답변하지 않습니다",
+    "확인되어 변경 내역을 단정하지 않습니다",
+    "근거를 확인하지 못한 대상", "확인되지 않은 필수 항목", "정정 전후 중 한쪽만 확인된 항목",
+    # scope_gate.py
+    "확인할 수 있는 범위를 벗어납니다",
+)
 
 # 평균을 내는 비율형 지표. retrieval / full 양쪽에 없는 키는 자동으로 건너뛴다.
 _RATE_KEYS = (
@@ -108,6 +120,20 @@ def _gold_report_ids(row: dict) -> set[str]:
 _DATE_ISO = re.compile(r"^(\d{4})[-./](\d{1,2})[-./](\d{1,2})$")
 _DATE_KO = re.compile(r"^(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일$")
 _NUMERIC_TOKEN = re.compile(r"^-?\d[\d,]*(?:\.\d+)?$")
+
+
+def _body_only(answer: str) -> str:
+    """근거 줄을 잘라낸 본문. 채점은 항상 이걸로 한다.
+
+    실측 실패(2026-08-31): `report_id(exchange_20240424800596)` 안에 `20240424`
+    가 들어 있어서, 날짜 정답 `2024-04-24` 가 **거부 답변에서도 만점**을 받았다.
+
+        답변  "확인되지 않습니다. 근거: report_id(exchange_20240424800596)"
+        정답  ["2024-04-24", "2026-10-30"]  -> 2/2 만점
+
+    날짜 정답이 들어간 문항이 suite_v1 5건, suite_v2 54건이다.
+    """
+    return (answer or "").split("근거:")[0]
 
 
 def _norm_token(s: str) -> str:
@@ -184,8 +210,9 @@ def required_report(answer: str, required) -> dict:
     items = [t for t in (required or []) if str(t).strip()]
     if not items:
         return {"n": 0, "matched": 0, "coverage": None, "missing": []}
-    an = _norm_token(answer)
-    nums = _decimals(answer)
+    body = _body_only(answer)
+    an = _norm_token(body)
+    nums = _decimals(body)
     missing = [t for t in items if not _token_present(t, an, nums)]
     matched = len(items) - len(missing)
     return {"n": len(items), "matched": matched,
@@ -194,21 +221,51 @@ def required_report(answer: str, required) -> dict:
 
 # --------------------------------------------------------------------------- 채점
 
+_PAREN_NEG = re.compile(r"^\((?P<v>[\d,.]+)\)$")
+
+
+def _as_decimal(text: str):
+    """수치 표기를 Decimal 로. 회계 괄호 음수와 △ 도 받는다."""
+    t = re.sub(r"[,\s원₩%]", "", (text or "").strip())
+    if not t:
+        return None
+    neg = False
+    m = _PAREN_NEG.match(t)
+    if m:
+        t, neg = m.group("v"), True
+    elif t.startswith(("△", "▲", "-", "−")):
+        t, neg = t[1:], True
+    t = t.rstrip(".")
+    try:
+        d = Decimal(t)
+    except InvalidOperation:
+        return None
+    return -d if neg else d
+
+
 def _answer_hit(answer: str, golds: list[str]) -> bool:
-    """정답 수치가 답변에 있는가. 콤마 표기 차이는 무시한다."""
+    """정답 수치가 답변에 있는가. 표기 차이는 흡수한다.
+
+    2026-08-31: 문자열 비교를 **Decimal 비교**로 바꿨다. 그전에는 같은
+    채점기 안에서 규칙이 갈렸다 — 서술형 경로(`_token_present`)는 Decimal 로
+    `9.90 == 9.9%` 를 흡수하는데, 값 경로는 문자열이라 오답이었다.
+    실측으로 suite_v2 18문항이 이것 때문에 정답을 오답으로 받고 있었다
+    (소수점 14건 `17.0` vs `17%`, 괄호 음수 4건 `(6,503)` vs `-6,503`).
+    """
     if not golds:
         return False
-    norm_answer = _norm(answer)
-    answer_numbers = {_norm(n) for n in _numbers(answer)}
+    body = _body_only(answer)
+    norm_answer = _norm(body)
+    answer_decimals = {d for n in _numbers(body) if (d := _as_decimal(n)) is not None}
     for g in golds:
         ng = _norm(g)
         if not ng:
             continue
-        if ng.replace(".", "").isdigit():
-            # 수치 정답은 **토큰 단위로 정확히** 일치해야 한다.
-            # 부분 문자열을 허용하면 `1234` 가 `91,234,567` 안에서 정답 처리된다
-            # (테스트로 실제 확인). 채점기가 느슨하면 없는 개선이 보인다.
-            if ng in answer_numbers:
+        gd = _as_decimal(g)
+        if gd is not None:
+            # 수치 정답은 **값 단위로 정확히** 일치해야 한다. 부분 문자열을
+            # 허용하면 `1234` 가 `91,234,567` 안에서 정답이 된다(실측 확인).
+            if gd in answer_decimals:
                 return True
         elif len(ng) >= 2 and ng in norm_answer:
             # 비수치 정답(계약상대·사유 등)은 포함 여부로 본다.
@@ -288,8 +345,14 @@ _YESNO_GOLD = re.compile(r"^\s*(?P<verdict>예|아니오)\s*[\(（]")
 
 # 순서가 중요하다. 거부를 먼저 보지 않으면 "확인할 수 없습니다"가
 # 부정("없")에 걸려 '아니오'로 잘못 읽힌다.
-_NEG_PAT = re.compile(r"(존재하지\s*않|없습니다|없음|아니오|아닙니다|해당\s*사항\s*없)")
-_POS_PAT = re.compile(r"(존재합니다|존재한다|있습니다|있음|네,|예,|맞습니다)")
+# 2026-08-31: 실측으로 놓치던 표현을 넣었다. 과거형("존재했습니다")·건수형
+# ("2건입니다")·발견형("발견되지 않았습니다")이 전부 '불명' 이었다.
+_NEG_PAT = re.compile(
+    r"(존재하지\s*않|없습니다|없음|없었|아니오|아닙니다|해당\s*사항\s*없"
+    r"|발견되지\s*않|확인되지\s*않았)")
+_POS_PAT = re.compile(
+    r"(존재합니다|존재한다|존재했|존재하며|존재하는|있습니다|있음|있었|네,|예,|맞습니다"
+    r"|\d+\s*건(?:입니다|이\s*확인|을\s*확인|이\s*있))")
 _WINNER_PAT = re.compile(r"[^.\n]*(?:더\s*큰|더\s*많|가장\s*큰|큽니다|많습니다|따라서)[^.\n]*")
 
 
@@ -322,11 +385,18 @@ def _verdict(answer: str) -> str:
 
 
 def _stated_winner(answer: str, candidates: list[str]) -> str | None:
-    """답변이 결론 문장에서 지목한 쪽. 못 찾으면 None."""
+    """답변이 결론 문장에서 지목한 쪽. 못 찾으면 None.
+
+    후보끼리 포함 관계면 **긴 쪽만 센다.** 정답 `JYP Ent (...)` 에서 후보를
+    뽑으면 `JYP Ent` 와 `JYP` 가 함께 들어가는데, 둘 다 문장에 있으니
+    `len(hits)==2` 가 되어 판정을 포기했다 — 완벽한 답변이 0점이 됐다.
+    """
     for sentence in reversed(_WINNER_PAT.findall(answer or "")):
         hits = [c for c in candidates if c and c in sentence]
-        if len(hits) == 1:
-            return hits[0]
+        maximal = [h for h in hits
+                   if not any(h != other and h in other for other in hits)]
+        if len(maximal) == 1:
+            return maximal[0]
     return None
 
 
@@ -337,7 +407,14 @@ def grade_answer(answer: str, gold: str, golds: list[str],
 
     if any_groups:
         # D-2형 — 정답 후보가 여럿. 하나만 온전히 맞으면 정답이다.
-        rep = required_any_report(answer, any_groups)
+        # required_all 이 함께 있으면 **그것도 후보 하나로 넣는다.** 예전엔
+        # any_groups 가 있으면 required_all 을 아예 안 봤는데, 후보 중에
+        # 토큰 1개짜리가 섞이면 "숫자 하나만 언급하면 만점"이 됐다.
+        groups = list(any_groups)
+        items0 = [t for t in (required or []) if str(t).strip()]
+        if items0 and list(items0) not in [list(g) for g in groups]:
+            groups.append(items0)
+        rep = required_any_report(answer, groups)
         if rep["n"]:
             return int(rep["matched"] == rep["n"]), "required_any"
 
@@ -364,11 +441,19 @@ def grade_answer(answer: str, gold: str, golds: list[str],
         if not numbers or not numbers <= answer_numbers:
             return 0, "compare"        # 양쪽 수치를 다 제시해야 한다
         winner = m.group("winner").strip()
-        names = [seg.strip().split()[0] for seg in body.split(" vs ") if seg.strip()]
-        stated = _stated_winner(answer, names or [winner])
-        # 결론 문장을 못 찾으면 수치가 다 맞은 것으로 인정한다 — 표현이
-        # 다양해 결론 탐지가 실패할 수 있고, 그걸로 오답 처리하면 과하다.
-        return int(stated is None or stated == winner), "compare"
+        # 이름을 `split()[0]` 으로 자르면 공백 있는 회사명이 깨진다
+        # (실측: gold `JYP Ent (...)` -> names ['JYP'] -> 완벽한 답도 0점).
+        # 정답의 승자 문자열을 그대로 후보에 넣는다.
+        names = [seg.strip().split(" ")[0] for seg in body.split(" vs ") if seg.strip()]
+        names = list(dict.fromkeys([winner, *names]))
+        stated = _stated_winner(_body_only(answer), names)
+        if stated is None:
+            # 예전에는 여기서 **정답 처리**했다. 그러면 승자를 아예 안 밝힌
+            # 답변과 승자를 틀리게 쓴 답변이 모두 통과한다(실측 3종 재현).
+            # 수치는 다 맞았으므로 오답이라고 단정하지도 않고, 별도 형식으로
+            # 분리해 사람이 보게 한다.
+            return 0, "compare_no_verdict"
+        return int(stated == winner), "compare"
 
     return int(_answer_hit(answer, golds)), "value"
 
@@ -1000,7 +1085,11 @@ def main() -> int:
     if unanswered and not (args.mode == "full" and args.pipeline == "v2"):
         logger.warning("정답이 비어 있는 %d문항은 제외한다(v2 full 모드에서만 채점)",
                        len(unanswered))
-        rows = [r for r in rows if _gold_answers(r)]
+        # 판단 조건과 같은 기준으로 걸러야 한다. 예전엔 `_gold_answers` 만 봐서
+        # required_all/required_any 로 채점 가능한 문항까지 버렸다 —
+        # suite_v2 296문항 중 87문항이 조용히 사라졌다(2026-08-31 발견).
+        rows = [r for r in rows
+                if _gold_answers(r) or r.get("required_all") or r.get("required_any")]
     elif unanswered:
         logger.info("정답 문장이 없는 %d문항은 서술형 기준으로 채점한다", len(unanswered))
     if args.sample and args.sample < len(rows):

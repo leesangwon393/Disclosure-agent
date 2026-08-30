@@ -121,3 +121,48 @@ def test_not_applicable_when_target_cannot_be_identified():
     r = check_existence("한미반도체에 그런 게 있는가?", HANMI, companies=["한미반도체"])
     assert not r.applicable
     assert r.prompt_block() == ""
+
+
+# --- 셀 수 없는 것은 단정하지 않는다 (2026-08-31) ----------------------------
+#
+# EVENT_WORDS 8개 중 코퍼스 보고서명에 실제로 등장하는 것은 해지·정정뿐이다.
+# 해제·취소·철회·중단·종료·파기를 쓴 질문은 내용과 무관하게 matches=0 이 되어
+# "전수 확인했으므로 부재가 확인된 것" 이라고 단정하게 만들었다.
+# 환각을 막으려던 장치가 반대로 환각을 강제하고 있었다.
+
+def test_event_absent_from_the_whole_corpus_is_not_judged():
+    """코퍼스 보고서명에 그 사건어가 아예 없으면 부재를 단정할 수 없다."""
+    r = check_existence("한미반도체가 체결한 계약이 취소된 적이 있는가?", HANMI,
+                        companies=["한미반도체"], report_kinds=["단일판매ㆍ공급계약체결"])
+    assert not r.applicable
+    assert "셀 수 없다" in r.note
+    assert r.prompt_block() == ""
+
+
+def test_unmatched_kind_is_not_judged():
+    """유형 필터가 아무것도 못 맞추면 무엇을 센 건지 알 수 없다."""
+    r = check_existence("한미반도체의 임원 보수가 정정된 적이 있는가?", HANMI,
+                        companies=["한미반도체"], report_kinds=["없는유형"])
+    assert not r.applicable
+
+
+def test_period_narrows_the_scan():
+    """"2021년에 해지한 계약" 에 2024년 공시를 근거로 답하면 안 된다."""
+    r = check_existence("한미반도체가 2021년에 해지한 계약이 있는가?", HANMI,
+                        companies=["한미반도체"], report_kinds=["단일판매ㆍ공급계약체결"],
+                        periods=["2021"])
+    assert not r.applicable
+    assert "기간" in r.note
+
+
+def test_period_within_range_still_judges():
+    r = check_existence("한미반도체가 2023년에 해지한 공급계약이 있는가?", HANMI,
+                        companies=["한미반도체"], report_kinds=["단일판매ㆍ공급계약체결"],
+                        periods=["2023"])
+    assert r.applicable and r.verdict == "아니오"
+
+
+def test_label_never_says_the_meaningless_해당유형():
+    r = check_existence("한미반도체가 자기주식취득신탁계약을 해지한 적이 있는가?",
+                        HANMI, companies=["한미반도체"])
+    assert "해당 유형" not in r.prompt_block()

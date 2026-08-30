@@ -42,6 +42,19 @@ from make_eval_suite_v2 import clean_key, is_bad_key, norm_report  # noqa: E402
 
 MAX_TOKENS_PER_CHAIN = 4
 
+# 문서 하나로 끝나는 정정("[기재정정]...")에서 정답으로 쓸 대표 수치 항목.
+# 이런 문서는 `correction_group_id` 가 자기 자신이라 문서 간 체인 열거에서
+# 통째로 빠졌다. 실제로는 문서 안에 `정정전/정정후` 표로 기록된 정정이고,
+# 모델이 그걸 설명해도 오답이 됐다(2026-08-31, S023·S024 실측).
+#
+# 파서가 `정정전` 칸을 표 헤더("정정후")로 잡아버려 **이전 값은 facts 에
+# 없다.** 그래서 최종값 + 항목명만 요구한다 — 채점 기준이 원래
+# "최신 정정본 수치를 답하는가" 이므로 그것으로 충분하다.
+SINGLE_DOC_VALUE_KEYS = (
+    "계약금액", "확정계약금액", "계약금액총액", "투자금액", "양수금액", "양도금액",
+    "취득금액", "처분금액", "권면총액", "발행가액", "신주발행가액",
+)
+
 
 def nfc(s: str) -> str:
     return unicodedata.normalize("NFC", s or "")
@@ -92,9 +105,42 @@ def chains_for(db, man, company: str, kind: str) -> list[dict]:
         changed = sorted(k for k in set(before) & set(after) if before[k] != after[k])
         if not changed:
             continue
+        # 값만 넣으면 **토큰 1개짜리 후보**가 생긴다. 그러면 서술형 문항이
+        # "숫자 하나만 언급하면 만점"이 된다(2026-08-31 발견, 4문항 6그룹).
+        # 채점 기준이 원래 "변경 항목을 특정하는가" 이므로 항목명도 함께 요구한다.
         tokens = [after[k] for k in changed][:MAX_TOKENS_PER_CHAIN]
+        if len(tokens) < 2:
+            tokens = tokens + changed[:1]
         out.append({"first_doc": first, "final_doc": final,
                     "changed": changed, "tokens": tokens})
+    return out
+
+
+def single_doc_corrections(db, man, company: str, kind: str, covered: set) -> list[dict]:
+    """문서 하나로 끝나는 정정본을 후보로 만든다."""
+    out = []
+    for d in man.values():
+        doc_id = d["doc_id"]
+        if doc_id in covered or not d.get("is_correction"):
+            continue
+        if nfc(d["corp_name"]) != company:
+            continue
+        if kind and norm_report(nfc(d.get("report_nm", ""))) != kind:
+            continue
+        rows = db.execute(
+            "SELECT key_norm, value_text FROM facts "
+            "WHERE doc_id=? AND value_num IS NOT NULL", (doc_id,)).fetchall()
+        picked = []
+        for want in SINGLE_DOC_VALUE_KEYS:
+            for key, val in rows:
+                if clean_key(key) == want and val and val not in picked:
+                    picked.append(val)
+                    picked.append(want)
+                    break
+            if picked:
+                break
+        if picked:
+            out.append({"final_doc": doc_id, "tokens": picked[:MAX_TOKENS_PER_CHAIN]})
     return out
 
 
@@ -141,7 +187,9 @@ def main() -> int:
                 continue
 
             chains = chains_for(db, man, company, kind)
-            groups = [c["tokens"] for c in chains if c["tokens"]]
+            covered = {d for c in chains for d in (c["first_doc"], c["final_doc"])}
+            singles = single_doc_corrections(db, man, company, kind, covered)
+            groups = [c["tokens"] for c in chains + singles if c["tokens"]]
             # 손으로 확인한 기존 정답은 지우지 않고 후보에 더한다.
             if row.get("required_all"):
                 groups.append(list(row["required_all"]))
@@ -160,8 +208,8 @@ def main() -> int:
             row["answer_source"] = "chains_20260830"
             touched += 1
             print(f"  [{row.get('id')}] {company}/{kind or '-'}: "
-                  f"후보 {len(uniq)}개 (체인 {len(chains)}, 정정공시 "
-                  f"{row['corrected_doc_count']}건)")
+                  f"후보 {len(uniq)}개 (문서간 체인 {len(chains)} + 단일문서 "
+                  f"{len(singles)}, 정정공시 {row['corrected_doc_count']}건)")
         print(f"{path}: {touched}문항 갱신")
         if not args.dry_run and touched:
             path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",

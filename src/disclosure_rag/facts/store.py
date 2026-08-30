@@ -112,6 +112,7 @@ class FactStore:
         min_value: float | None = None,
         max_value: float | None = None,
         latest_only: bool = True,
+        corrections_only: bool = False,
         numeric_only: bool = False,
         exact_only: bool = False,
         order_by: str = "date",
@@ -170,6 +171,10 @@ class FactStore:
             where.append("value_num IS NOT NULL")
         if latest_only:
             where.append("(is_latest IS NULL OR is_latest = 1)")
+        if corrections_only:
+            # 질문이 "[기재정정]..." 처럼 정정본을 지목했을 때만. 비정형 검색과
+            # 조건을 맞춰 두 채널이 서로 다른 문서를 답하지 않게 한다.
+            where.append("is_correction = 1")
 
         def _run(key_clause: str | None, key_params: list) -> list[dict]:
             w = list(where) + ([key_clause] if key_clause else [])

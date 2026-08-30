@@ -69,7 +69,25 @@ def normalize_period_tokens(tokens: list[str] | str | None) -> list[str] | None:
         return None
     if isinstance(tokens, str):
         tokens = [tokens]
-    joined = " ".join(t for t in tokens if t)
+    items = [t for t in tokens if t and str(t).strip()]
+    if not items:
+        return None
+
+    # 토큰을 하나로 이어 붙이면 **한 토큰의 분기·반기 표현이 다른 연도까지
+    # 번진다.** 실측(2026-08-31):
+    #     ["2024년 1분기", "2025년"]  -> ["2024-03", "2025-03"]  ← 2025 가 3월로 좁혀짐
+    # "2024년 1분기와 2025년 실적을 비교" 류 질문에서 2025년 근거가 3월분으로만
+    # 잘린다. 토큰이 둘 이상이면 각각 따로 해석해 합친다.
+    if len(items) > 1:
+        merged: list[str] = []
+        for item in items:
+            part = normalize_period_tokens(item)
+            for value in (part or []):
+                if value not in merged:
+                    merged.append(value)
+        return merged or None
+
+    joined = " ".join(str(t) for t in items)
     if not joined.strip():
         return None
 
@@ -113,6 +131,7 @@ class RetrievalFilter:
     filing_date_to: str | None = None
     latest_only: bool = False                 # 일반 조회: 최신 유효본만 (§30)
     include_corrections: bool = True          # 정정 분석: original+정정 체인 유지 (§30)
+    corrections_only: bool = False            # 질문이 정정본을 콕 집었을 때만 켠다
 
     def __post_init__(self):
         if self.companies:
@@ -188,6 +207,12 @@ class RetrievalFilter:
         if self.latest_only and chunk.is_latest is False:
             return False
         if not self.include_corrections and chunk.is_correction:
+            return False
+        # 질문이 "[기재정정]..." 처럼 정정본을 명시하면 원본은 답이 아니다.
+        # 실측 실패(S001, 2026-08-30): 삼성전자 자기주식취득결정 공시 6건 중
+        # [기재정정]은 2건인데, latest_only 가 정정본이 아닌 최신 문서를 골라
+        # 그 값을 답했다. 질문에 붙은 표시를 검색 조건으로 안 쓰고 있었다.
+        if self.corrections_only and not chunk.is_correction:
             return False
         return True
 

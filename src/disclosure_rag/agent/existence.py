@@ -149,13 +149,16 @@ class ExistenceResult:
 NOT_APPLICABLE = ExistenceResult()
 
 
-def check_existence(query: str, manifest, *, companies=(), report_kinds=()) -> ExistenceResult:
+def check_existence(query: str, manifest, *, companies=(), report_kinds=(),
+                    periods=()) -> ExistenceResult:
     """회사 공시 목록을 전수로 훑어 존재 여부를 판정한다.
 
     적용 조건 — 셋 다 만족해야 한다:
       1. 질문이 존재를 묻는 어미로 끝난다
       2. 회사가 정확히 하나로 특정됐다 (둘 이상이면 비교 질문이라 여기서 안 다룬다)
       3. 그 회사의 공시가 manifest 에 있다 (없으면 범위 게이트 소관이다)
+      4. 대상 유형에 해당하는 공시를 하나라도 찾았다 (못 찾으면 무엇을 센
+         것인지 알 수 없으므로 판정하지 않는다)
     """
     if not is_existence_question(query):
         return NOT_APPLICABLE
@@ -171,6 +174,23 @@ def check_existence(query: str, manifest, *, companies=(), report_kinds=()) -> E
 
     event = detect_event(query)
     kind_keys = detect_kind_keys(query, report_kinds)
+
+    # 사건어가 **코퍼스 전체 보고서명에 한 번도 안 나오면** 그 사건은 우리
+    # 목록으로 셀 수 있는 대상이 아니다. 0건을 부재로 읽으면 안 된다.
+    #
+    # 실측(2026-08-31): EVENT_WORDS 8개 중 해지·정정만 실제로 등장하고
+    # 해제·취소·철회·중단·종료·파기는 4,204건 어디에도 없다. 그런 낱말을
+    # 쓴 질문은 내용과 무관하게 "아니오"가 나왔다.
+    def _event_recorded(r) -> bool:
+        if event in norm_key(getattr(r, "report_nm", "")):
+            return True
+        # 정정 여부는 보고서명 말고 manifest 플래그로도 기록된다.
+        return event == "정정" and bool(getattr(r, "is_correction", False))
+
+    if event and not any(_event_recorded(r) for r in (manifest or [])):
+        return ExistenceResult(
+            applicable=False, company=company, event=event,
+            note=f"'{event}' 는 공시 보고서명으로 기록되지 않는다 — 목록으로는 셀 수 없다")
     if not event and not kind_keys:
         # 무엇의 존재를 묻는지 특정 못 했다. 억지로 '없다'고 하면 안 된다.
         return ExistenceResult(applicable=False, company=company, scanned=len(rows),
@@ -180,6 +200,16 @@ def check_existence(query: str, manifest, *, companies=(), report_kinds=()) -> E
         return DocRef(doc_id=getattr(r, "doc_id", ""),
                       report_nm=getattr(r, "report_nm", ""),
                       rcept_dt=getattr(r, "rcept_dt", ""))
+
+    # 기간이 지정됐으면 그 기간의 공시만 센다. 안 그러면 "2025년에 해지한
+    # 계약이 있는가?" 에 2021년 해지 공시를 근거로 "예"를 단정하게 된다.
+    years = {p[:4] for p in (periods or []) if len(str(p)) >= 4}
+    if years:
+        rows = [r for r in rows
+                if (getattr(r, "rcept_dt", "") or "")[:4] in years]
+        if not rows:
+            return ExistenceResult(applicable=False, company=company,
+                                   note="해당 기간의 공시가 없다")
 
     matches, related = [], []
     for r in rows:
@@ -195,8 +225,24 @@ def check_existence(query: str, manifest, *, companies=(), report_kinds=()) -> E
         elif kind_ok:
             related.append(ref(r))
 
-    kind_label = " / ".join(report_kinds) if report_kinds else (
-        "해당 유형" if kind_keys else "")
+    # 유형 필터가 아무것도 못 맞췄으면(matches 도 related 도 0) 무엇을 센 건지
+    # 알 수 없다. 그 상태로 "없습니다"를 단정시키면 지어내기와 다를 바 없다.
+    #
+    # 실측(2026-08-31): EVENT_WORDS 8개 중 해제·취소·철회·중단·종료·파기는
+    # 코퍼스 보고서명에 **한 번도 안 나온다.** 그 낱말을 쓴 질문은 내용과
+    # 무관하게 전부 matches=0 이 됐고, 블록은 "전수 확인했으므로 부재가
+    # 확인된 것"이라고 단정하게 만들었다. 환각을 막으려던 장치가 반대로
+    # 환각을 강제하고 있었다.
+    if not matches and not related:
+        return ExistenceResult(applicable=False, company=company, event=event,
+                               scanned=len(rows),
+                               note="대상 유형에 해당하는 공시를 하나도 못 찾았다")
+
+    kind_label = " / ".join(report_kinds) if report_kinds else ""
+    if not kind_label:
+        # "해당 유형" 은 가리키는 대상이 없는 말이다. 모델이 무엇의 부재인지
+        # 모른 채 부재를 단정하게 된다.
+        kind_label = f"{company} 의 공시"
     return ExistenceResult(
         applicable=True,
         verdict="예" if matches else "아니오",

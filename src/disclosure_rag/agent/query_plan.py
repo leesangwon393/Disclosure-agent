@@ -102,6 +102,9 @@ class QueryPlan:
 
     # --- 버전 처리 ----------------------------------------------------------
     latest_policy: LatestPolicy = "latest_only"
+    # 질문이 정정본을 콕 집었는가("[기재정정]주요사항보고서..."). 정정 전후를
+    # 비교하는 질문(correction_diff)은 원본도 필요하므로 여기서 제외한다.
+    corrections_only: bool = False
 
     # --- 충족 조건 ----------------------------------------------------------
     expected_fields: list[str] = field(default_factory=list)
@@ -312,6 +315,21 @@ def classify_task(query: str, *, n_companies: int = 0, mode: AnswerMode = "unkno
 # 정정본을 어떻게 다룰지. 실측상 정정공시의 43%가 원본과 텍스트가 거의 같아서,
 # 정리하지 않으면 같은 내용이 top-k 를 채운다.
 
+# 질문이 정정본 자체를 지목하는 표현. 보고서명에 실제로 붙는 표기를 쓴다.
+_CORRECTION_MARKERS = ("[기재정정]", "기재정정", "[첨부추가]", "정정본", "정정 공시", "정정공시")
+
+
+def detect_corrections_only(query: str, *, task: str = "") -> bool:
+    """정정본만 봐야 하는 질문인가.
+
+    `correction_diff` 는 최초본도 있어야 비교가 되므로 항상 False 다.
+    """
+    if task == "correction_diff":
+        return False
+    q = _nfc(query)
+    return any(m in q for m in _CORRECTION_MARKERS)
+
+
 _ALL_VERSION_WORDS = ("이력", "전부", "모든 정정", "몇 번 정정", "정정 내역 전부")
 _FIRST_AND_FINAL_WORDS = ("최초", "최종", "정정 전", "정정전", "전후", "달라", "차이")
 
@@ -429,6 +447,10 @@ class RulePlanBuilder:
         latest_policy = decide_latest_policy(q)
         src["latest_policy"] = "rule"
 
+        corrections_only = detect_corrections_only(q, task=task)
+        if corrections_only:
+            src["corrections_only"] = "rule"
+
         aggregation = detect_aggregation(q)
         if aggregation != "none":
             src["aggregation"] = "rule"
@@ -459,6 +481,7 @@ class RulePlanBuilder:
             report_types=report_types,
             report_kinds=report_kinds,
             latest_policy=latest_policy,
+            corrections_only=corrections_only,
             aggregation=aggregation,
             expected_fields=expected_fields,
             needs_multiple_documents=needs_multi,

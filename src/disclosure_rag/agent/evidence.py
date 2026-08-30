@@ -232,7 +232,10 @@ def build_evidence_pack_from_retrieval(
             for row in shown
         )
         if hidden:
-            body += f"\n- (그 외 {hidden}건은 위 ▶ 계산에 포함되었으나 생략)"
+            # 예전 문구는 "위 ▶ 계산에 포함되었으나 생략" 이었는데, 생략된
+            # 행 중 value_num 이 없는 것은 ▶ 계산에도 안 들어간다. 사실과
+            # 다른 안내였다(2026-08-31 발견).
+            body += f"\n- (그 외 {hidden}건 생략)"
         marks = _mark_aggregate(fact_rows, aggregation)
         header = "[FACT] 공시 표에서 직접 추출한 확정 값입니다."
         if marks:

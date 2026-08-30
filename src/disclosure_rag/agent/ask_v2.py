@@ -137,12 +137,22 @@ class AskV2:
                 out.notes += [i.message for i in out.validation.errors]
 
         # --- 3. 범위 게이트 ----------------------------------------------
-        if self.registry is not None:
-            out.scope = apply_scope_gate(plan, question, self.registry)
+        # registry 가 없어도 hard_out(실시간 주가·뉴스·예측·투자추천) 판정은
+        # 돌아야 한다. 그건 회사명 목록과 무관한 규칙인데, 예전에는 registry
+        # 하나 때문에 게이트가 통째로 꺼졌고 결과 객체에도 로그에도 흔적이
+        # 남지 않았다(2026-08-31 발견).
+        if self.registry is None:
+            out.notes.append("범위 게이트: 회사명 목록 없음 — 코퍼스 밖 회사를 걸러내지 못한다")
+        out.scope = apply_scope_gate(plan, question, self.registry)
+        if out.scope is not None:
             if out.scope.should_refuse:
                 out.stopped_at = "scope_gate"
                 out.answer = out.scope.message or "확인되지 않습니다."
                 return out          # HCX 호출 0회
+            if out.scope.needs_clarification and out.scope.clarification_message:
+                # 계산해놓고 버리던 값이다. 회사명이 없어 답할 수 없는 질문은
+                # 거부가 아니라 역질문이 맞다(평가 항목「정보한계 대응」).
+                out.notes.append(f"역질문: {out.scope.clarification_message}")
 
         # --- 3.5. 존재 전수 확인 ------------------------------------------
         # 검색은 상위 k건만 본다. 거기 없다고 '없다'고 말할 수는 없어서 모델이
@@ -153,26 +163,32 @@ class AskV2:
             try:
                 out.existence = check_existence(
                     question, manifest,
-                    companies=plan.companies, report_kinds=plan.report_kinds)
+                    companies=plan.companies, report_kinds=plan.report_kinds,
+                    periods=plan.periods)
             except Exception:  # noqa: BLE001
                 logger.warning("[ASKv2] 존재 확인 실패 — 없이 진행", exc_info=True)
 
         # --- 4~10. 검색 -> 구조화 -> 충분성 (부족하면 재검색) --------------
+        # 재검색 질의어. **지시문이 아니라 낱말만** 붙인다 —
+        # `retry_message()` 를 붙이면 "위 항목을 더 찾은 뒤 답하세요" 같은
+        # 문장이 통째로 어휘 검색 질의가 되어 재검색이 1차보다 나빠졌다.
         hint = ""
         for attempt in range(self.max_nudges + 1):
             out.retries = attempt
             decomposed = decompose_and_search(
-                plan, question if not hint else f"{question}\n{hint}", self._search)
+                plan, f"{question} {hint}".strip() if hint else question, self._search)
             merged = self._expand_parents(decomposed.merged)
             processed = process_evidence(plan, merged)
             report = check_sufficiency(plan, processed, decompose_result=decomposed,
-                                       nudges_used=attempt)
+                                       nudges_used=attempt,
+                                       max_nudges=self.max_nudges)
             out.decomposed, out.processed, out.sufficiency = decomposed, processed, report
             out.evidence = merged
             if report.ok or not report.should_retry:
                 break
-            hint = report.retry_message()
-            logger.info("[ASKv2] 재검색 %d회차: %s", attempt + 1, report.reasons)
+            hint = " ".join(report.search_terms())
+            logger.info("[ASKv2] 재검색 %d회차 질의어=%r 사유=%s",
+                        attempt + 1, hint, report.reasons)
 
         # --- 11. 거부 게이트 ---------------------------------------------
         out.abstention = decide_from_processed(

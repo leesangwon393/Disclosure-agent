@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import re
+
 from disclosure_rag.agent.evidence import EvidencePack
 from disclosure_rag.agent.hcx_client import HCXClient
 
@@ -14,7 +16,8 @@ from disclosure_rag.agent.hcx_client import HCXClient
 ANSWER_SYSTEM_PROMPT = """당신은 금융공시(DART) 근거 기반 답변 생성기입니다.
 
 ## 하는 일
-아래 [EVIDENCE]와 [TOOL RESULT]에서 질문에 해당하는 항목을 찾아 그 값을 답합니다.
+아래 [EVIDENCE] · [FACT] · [전수 확인] 블록에서 질문에 해당하는 항목을 찾아
+그 값을 답합니다.
 
 ## 숫자 표기 — 가장 중요
 1. **근거에 적힌 숫자를 글자 그대로 옮기세요.** 쉼표 위치까지 그대로입니다.
@@ -24,8 +27,11 @@ ANSWER_SYSTEM_PROMPT = """당신은 금융공시(DART) 근거 기반 답변 생�
 2. 단위 환산이 꼭 필요하면 **원문 숫자를 먼저 쓰고** 괄호로 덧붙이세요.
 
 ## 근거 사용
-3. [EVIDENCE]와 [TOOL RESULT]에 있는 내용만 사용하세요. 없는 숫자·날짜·사실을
-   추측하거나 지어내지 마세요.
+3. **[EVIDENCE], [FACT], [전수 확인] 블록에 있는 내용만** 사용하세요.
+   없는 숫자·날짜·사실을 추측하거나 지어내지 마세요.
+   ([FACT] 는 공시 표에서 직접 뽑은 확정값, [전수 확인] 은 공시 목록을 전수로
+    센 결과입니다. 둘 다 정당한 근거입니다 — 예전 목록에 빠져 있어서 모델이
+    쓰면 안 되는 줄 알고 "확인할 수 없습니다"로 답하는 일이 있었습니다.)
 4. **같은 항목이 여러 공시에 나오면 어느 하나를 고르려 하지 말고, 공시일과 함께
    전부 제시하세요.** 질문이 시점을 특정하지 않았다면 그게 맞는 답입니다.
    (실측 실패: 값이 3개 공시에 흩어져 있자 "확인할 수 없습니다"라고 답했습니다.
@@ -122,6 +128,8 @@ _MODE_CLOSED = """
     주식수까지 쓰면 답변이 흐려집니다.
 13. 다만 **같은 항목이 여러 공시에 서로 다른 값으로 있으면 공통규칙 4가
     우선합니다.** 하나를 고르지 말고 공시일과 함께 전부 나열하세요.
+    **예외:** 질문이 최대/최소/합계처럼 값 하나를 고르라고 한 경우에는
+    아래 '가장 큰/작은 값 고르기' 규칙이 이 13번보다 우선합니다.
     12번은 '다른 항목'을 막는 규칙이지, 같은 항목의 '여러 시점'을 막는
     규칙이 아닙니다.
     (실측 실패 S001, 2026-08-30: 삼성전자 자기주식취득결정 공시가 6건이고
@@ -161,8 +169,11 @@ _TASK_BLOCKS = {
     밝히세요. 한쪽 값만으로 "더 크다"고 답하면 오답입니다.""",
     "calculate": """
 ## 계산
-14. 계산 결과는 이미 [TOOL RESULT]에 있습니다. **직접 암산하지 마세요.**
-15. 사용한 피연산자와 그 출처 공시를 함께 밝히세요.""",
+14. 계산에 쓸 값은 [FACT] 또는 [EVIDENCE]에 있습니다. 그 값을 **근거에 적힌
+    그대로** 옮긴 뒤 계산하세요. 근거에 없는 수를 만들어 넣지 마세요.
+15. 사용한 피연산자와 그 출처 공시를 함께 밝히세요.
+16. 계산 결과가 근거에 이미 적혀 있으면 그 값을 쓰고, 직접 계산한 값과
+    다르면 **근거의 값**을 따르세요.""",
     "count": """
 ## 건수
 14. 건수를 먼저 쓰고, **센 대상을 나열**하세요. 나열 없이 숫자만 쓰면
@@ -173,6 +184,34 @@ _TASK_BLOCKS = {
 _MAX_TOKENS = {"closed": 800, "open": 2400, "mixed": 2400, "unknown": 1600}
 
 
+_RULE_LINE = re.compile(r"^(?P<indent>\s*)(?P<num>\d+)(?P<tail>[.)]\s)", re.M)
+
+
+def _renumber(prompt: str) -> str:
+    """조립이 끝난 프롬프트의 규칙 번호를 1부터 다시 매긴다.
+
+    블록마다 번호를 하드코딩해 두면 조합에 따라 구멍이 난다. 실측(2026-08-31):
+
+        closed/lookup/max   -> 1..13, 17, 18   (14,15,16 없음)
+        unknown/count/max   -> 1..9, 14, 17,18 (10~13,15,16 없음)
+
+    task 블록 길이가 제각각인데 집계 블록만 17로 고정돼 있던 탓이다. 번호가
+    비면 모델이 앞 규칙을 못 봤다고 여길 수 있고, 번호로 교차참조하는 규칙
+    (13번의 "공통규칙 4가 우선")도 흔들린다.
+
+    **공통부(1~9)는 순서가 고정이라 번호가 안 바뀐다.** 그래서 4번·12번을
+    가리키는 교차참조는 그대로 유효하다.
+    """
+    counter = 0
+
+    def _bump(m: "re.Match") -> str:
+        nonlocal counter
+        counter += 1
+        return f"{m.group('indent')}{counter}{m.group('tail')}"
+
+    return _RULE_LINE.sub(_bump, prompt)
+
+
 def build_answer_prompt(plan) -> str:
     """QueryPlan 을 보고 시스템 프롬프트를 조립한다.
 
@@ -181,7 +220,11 @@ def build_answer_prompt(plan) -> str:
     if plan is None:
         return ANSWER_SYSTEM_PROMPT
     mode = getattr(plan, "answer_mode", "unknown")
-    block = {"closed": _MODE_CLOSED, "open": _MODE_OPEN, "mixed": _MODE_MIXED}.get(mode, "")
+    # answer_mode 를 못 정한 질문에 모드 블록을 통째로 빼면 10~13번이 사라지고
+    # task 블록이 14번부터 시작해 번호가 붕 뜬다. open 쪽으로 붙인다 —
+    # closed 로 오판하면 항목이 통째로 빠지지만 반대는 장황해질 뿐이다.
+    block = {"closed": _MODE_CLOSED, "open": _MODE_OPEN,
+             "mixed": _MODE_MIXED}.get(mode, _MODE_OPEN)
     prompt = ANSWER_SYSTEM_PROMPT + block + _TASK_BLOCKS.get(getattr(plan, "task", ""), "")
 
     if getattr(plan, "aggregation", "none") in ("max", "min"):
@@ -190,9 +233,13 @@ def build_answer_prompt(plan) -> str:
         word = "가장 큰" if plan.aggregation == "max" else "가장 작은"
         prompt += (f"\n\n## {word} 값 고르기\n"
                    "17. [FACT] 블록의 **▶ 표시가 이미 계산된 답**입니다. "
-                   "그 값을 그대로 쓰세요.\n"
+                   "그 값을 그대로 쓰세요. 이 규칙은 위 '전부 나열' 규칙보다 "
+                   "우선합니다.\n"
                    "18. 목록의 값들을 직접 비교해서 고르지 마세요. "
-                   "▶ 가 없을 때만 근거에서 찾으세요.")
+                   "▶ 가 여러 줄이면 그 줄들끼리만 비교해 결론을 쓰세요. "
+                   "▶ 가 하나도 없을 때만 근거에서 직접 찾으세요.")
+
+    prompt = _renumber(prompt)
 
     fields = list(getattr(plan, "expected_fields", []) or [])
     if fields and mode in ("open", "mixed"):

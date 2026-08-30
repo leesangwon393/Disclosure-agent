@@ -113,6 +113,7 @@ def retrieval_filter_from_plan(plan: QueryPlan) -> RetrievalFilter:
         doc_groups=list(plan.report_types) or None,
         periods=normalize_period_tokens(plan.periods),
         latest_only=(plan.latest_policy == "latest_only"),
+        corrections_only=bool(getattr(plan, "corrections_only", False)),
     )
 
 
@@ -177,6 +178,7 @@ class DualChannelRetriever:
                         found = self.fact_store.lookup(
                             company=company, key=key, doc_group=doc_group,
                             period=period, latest_only=latest_only,
+                            corrections_only=bool(getattr(plan, "corrections_only", False)),
                             order_by=order_by, limit=per_field,
                         )
                         for row in found:

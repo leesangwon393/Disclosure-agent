@@ -378,3 +378,25 @@ def test_expansion_only_returns_kinds_that_exist_in_the_schema():
 def test_unrelated_question_is_not_expanded():
     assert expand_concept_kinds("삼성전자의 순자산액은 얼마인가?", _KNOWN) == []
     assert expand_concept_kinds("신규시설투자등 공시를 정리해줘", _KNOWN) == []
+
+
+# --------------------------------------------------- 정정본을 지목한 질문
+from disclosure_rag.agent.query_plan import detect_corrections_only  # noqa: E402
+
+
+def test_correction_marker_in_question_restricts_to_corrections():
+    assert detect_corrections_only("[기재정정]주요사항보고서에 기재된 순자산액은?")
+    assert detect_corrections_only("삼성전자의 정정공시 내용을 알려줘")
+    assert detect_corrections_only("기재정정 보고서의 계약금액은?")
+
+
+def test_plain_question_does_not_restrict():
+    assert not detect_corrections_only("주요사항보고서에 기재된 순자산액은?")
+    assert not detect_corrections_only("2024년 신규시설투자등 공시를 정리해줘")
+
+
+def test_correction_diff_needs_the_original_too():
+    """정정 전후 비교는 최초본이 있어야 성립한다 — 여기서 정정본만 남기면 안 된다."""
+    q = "정정된 내역이 있는가? 있다면 최초 공시와 최종 정정본 사이 무엇이 달라졌나"
+    assert not detect_corrections_only(q, task="correction_diff")
+    assert detect_corrections_only(q, task="lookup")     # 유형이 다르면 적용된다

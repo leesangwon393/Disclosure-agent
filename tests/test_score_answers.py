@@ -281,10 +281,35 @@ def test_compare_rejects_a_wrong_conclusion():
     assert grade_answer(a, _S007_GOLD, [_S007_GOLD])[0] == 0
 
 
-def test_compare_accepts_when_the_conclusion_sentence_is_unrecognizable():
-    """결론 표현이 다양해 탐지가 실패할 수 있다 — 그걸로 오답 처리하면 과하다."""
+def test_compare_without_a_conclusion_is_not_counted_as_correct():
+    """결론을 못 찾으면 예전엔 **정답 처리**했다. 그게 두 종류를 통과시켰다.
+
+    실측(2026-08-31): 승자를 아예 안 밝힌 답변과 승자를 **틀리게** 쓴 답변이
+    모두 정답으로 잡혔다. `_WINNER_PAT` 가 마침표 없는 문장에서 두 회사 이름을
+    한꺼번에 잡아 `len(hits)==1` 이 깨지고 `stated=None` 이 되기 때문이다.
+    비교 문항은 suite_v1+v2 합쳐 68개라 그대로 두면 점수가 부풀려진다.
+
+    수치는 다 맞았으므로 '틀렸다'고 단정하지도 않는다 — 별도 형식으로
+    분리해서 사람이 보게 한다.
+    """
     a = "삼성전자 22,764,764,160,000원 / 한미반도체 149,919,000,000원"
-    assert grade_answer(a, _S007_GOLD, [_S007_GOLD])[0] == 1
+    hit, kind = grade_answer(a, _S007_GOLD, [_S007_GOLD])
+    assert (hit, kind) == (0, "compare_no_verdict")
+
+
+def test_compare_with_a_wrong_winner_in_a_period_less_sentence():
+    """마침표가 없어도 틀린 승자를 통과시키면 안 된다."""
+    a = ("삼성전자 22,764,764,160,000원 vs 한미반도체 149,919,000,000원 "
+         "-> 한미반도체가 더 큽니다")
+    assert grade_answer(a, _S007_GOLD, [_S007_GOLD])[0] == 0
+
+
+def test_compare_winner_name_with_a_space_is_matched():
+    """`split()[0]` 로 자르면 `JYP Ent` 가 `JYP` 가 돼 완벽한 답도 0점이 됐다."""
+    gold = "JYP Ent (JYP Ent 100,000,000 vs 파마리서치 50,000,000)"
+    a = ("JYP Ent 는 100,000,000원, 파마리서치는 50,000,000원입니다. "
+         "따라서 JYP Ent 가 더 큽니다.")
+    assert grade_answer(a, gold, [gold]) == (1, "compare")
 
 
 # --- C형: 예/아니오 --------------------------------------------------------

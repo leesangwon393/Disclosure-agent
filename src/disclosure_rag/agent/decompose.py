@@ -33,10 +33,13 @@ S007~S014 는 `answer_mode` 가 **closed** 다(답은 숫자 하나). open 일 �
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Sequence
 
 from disclosure_rag.agent.query_plan import QueryPlan
+
+logger = logging.getLogger(__name__)
 
 # search_fn(query_text, plan_for_this_subquery, k) -> [(chunk, score), ...]
 SearchFn = Callable[[str, QueryPlan, int], Sequence[tuple[Any, float]]]
@@ -78,9 +81,22 @@ class DecomposeResult:
 
 
 def _narrow(plan: QueryPlan, **overrides) -> QueryPlan:
-    """원본 계획을 복사해 일부만 좁힌다. 원본은 건드리지 않는다."""
+    """원본 계획을 복사해 일부만 좁힌다. 원본은 건드리지 않는다.
+
+    `dataclasses.replace` 는 **얕은 복사**라 리스트·dict 를 원본과 공유한다.
+    지금은 뒤 단계가 읽기만 해서 사고가 없지만, 어디선가
+    `plan.expected_fields.append(...)` 하나만 생기면 하위 질의 전체와 원본이
+    동시에 오염된다. 주석이 단언한 "원본은 건드리지 않는다"를 실제로 지킨다.
+    """
     from dataclasses import replace
     clone = replace(plan)
+    for name in ("companies", "periods", "report_types", "report_kinds",
+                 "expected_fields", "operations", "notes"):
+        value = getattr(clone, name, None)
+        if isinstance(value, list):
+            setattr(clone, name, list(value))
+    if isinstance(getattr(clone, "source", None), dict):
+        clone.source = dict(clone.source)
     for key, value in overrides.items():
         setattr(clone, key, value)
     # 하위 질의는 이미 쪼개진 단위라 더 쪼개지 않는다.
@@ -205,9 +221,14 @@ def decompose_and_search(
     for sq in subs:
         try:
             hits = list(search_fn(sq.text, sq.plan, sq.top_k))
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             # 하위 질의 하나가 실패해도 나머지는 살린다. 빈손으로 기록되어
             # Stage 11 이 '부분 근거'로 판단할 수 있다.
+            # **로그는 반드시 남긴다** — 무음으로 삼키면 인덱스 장애나 필터
+            # 버그가 "근거 0건 -> 확인되지 않습니다" 로 나가고 원인이 어디에도
+            # 안 남는다(2026-08-31 점검에서 발견).
+            logger.warning("[DECOMPOSE] 하위 질의 검색 실패(%s) label=%s: %s",
+                           type(exc).__name__, sq.label, exc)
             hits = []
         results.append((sq, hits))
 

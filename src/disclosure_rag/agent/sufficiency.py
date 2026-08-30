@@ -131,6 +131,7 @@ class SufficiencyReport:
     missing_fields: list[str] = _field(default_factory=list)
     empty_sub_queries: list[str] = _field(default_factory=list)
     incomplete_pairs: list[str] = _field(default_factory=list)
+    max_nudges: int = DEFAULT_MAX_NUDGES
     nudges_used: int = 0
 
     @property
@@ -146,7 +147,27 @@ class SufficiencyReport:
 
     @property
     def should_retry(self) -> bool:
-        return not self.ok and self.nudges_used < DEFAULT_MAX_NUDGES
+        # 예전엔 모듈 상수를 봐서 `AskV2(max_nudges=N)` 주입이 무시됐다.
+        # A/B 를 돌리면 설정이 먹은 줄 알고 잘못된 결론을 낸다.
+        return not self.ok and self.nudges_used < self.max_nudges
+
+    def search_terms(self) -> list[str]:
+        """재검색 **질의어**로 쓸 낱말들. 지시문이 아니라 검색어다.
+
+        `retry_message()` 는 모델에게 주는 문장이라 "위 항목을 더 찾은 뒤
+        답하세요" 같은 지시가 섞여 있다. 그걸 그대로 검색 질의에 붙이면
+        `점검·근거·모자랍니다·답하세요` 가 어휘 검색의 질의 텀이 되어
+        **재검색이 1차 검색보다 나빠진다**(2026-08-31 발견).
+        """
+        terms: list[str] = []
+        for value in (list(self.missing_fields) + list(self.empty_sub_queries)
+                      + list(self.incomplete_pairs)):
+            text = str(value).strip()
+            if not text:
+                continue
+            # 하위 질의 라벨은 `company:삼성전자` 형태다 — 값만 쓴다.
+            terms.append(text.split(":", 1)[-1].strip() if ":" in text else text)
+        return list(dict.fromkeys(t for t in terms if t))
 
     def retry_message(self) -> str:
         """무엇을 더 찾아야 하는지 **이름을 지목해서** 준다.
@@ -162,6 +183,7 @@ class SufficiencyReport:
 
 def check_sufficiency(
     plan, processed, *, decompose_result=None, nudges_used: int = 0,
+    max_nudges: int = DEFAULT_MAX_NUDGES,
 ) -> SufficiencyReport:
     """Stage 9 결과와 계획을 대조한다. LLM 을 쓰지 않는다.
 
@@ -177,5 +199,6 @@ def check_sufficiency(
     return SufficiencyReport(
         ok=not (missing or empty or pairs),
         missing_fields=missing, empty_sub_queries=empty, incomplete_pairs=pairs,
+        max_nudges=max_nudges,
         nudges_used=nudges_used,
     )
