@@ -63,23 +63,58 @@ class NumpyDenseRetriever:
         self.matrix = np.concatenate(mats, axis=0)
         self.chunks = kept
         del mats
+        # 회사 -> 행 번호. 필터가 회사를 지정하면 **그 회사 행만** 계산한다.
+        #
+        # 예전에는 626,497행 전부에 점수를 매기고 정렬한 뒤 파이썬 루프로
+        # 걸렀다. 대상 회사의 청크가 드문 공시(거래소·주요사항)일수록 상위권에
+        # 안 걸려 목록을 깊이 훑어야 했고, 그게 지연시간의 대부분이었다.
+        # 실측(2026-08-31, suite_v2 296문항): 검색이 전체 시간의 83%,
+        # lookup_form 은 검색 한 번에 67초. 정기공시는 회사당 청크가 많아
+        # 금방 걸리므로 3.4초 — 같은 코드인데 20배 차이가 났다.
+        #
+        # 결과는 **완전히 동일하다.** 어차피 필터가 떨어뜨릴 행을 계산에서
+        # 빼는 것뿐이다.
+        self._rows_by_company: dict[str, np.ndarray] = {}
+        buckets: dict[str, list[int]] = {}
+        for i, c in enumerate(kept):
+            name = getattr(c, "company", None)
+            if name:
+                buckets.setdefault(name, []).append(i)
+        self._rows_by_company = {k2: np.asarray(v, dtype=np.int64)
+                                 for k2, v in buckets.items()}
         logger.info("[DENSE] numpy 행렬 %s %s (%.2fGB)", self.matrix.shape,
                     self.matrix.dtype, self.matrix.nbytes / 1024 ** 3)
+
+    def _rows_for(self, flt: RetrievalFilter | None):
+        """필터가 회사를 지정했으면 해당 행 번호, 아니면 None(전체)."""
+        names = list(getattr(flt, "companies", None) or []) if flt is not None else []
+        if not names:
+            return None
+        parts = [self._rows_by_company[n] for n in names if n in self._rows_by_company]
+        if not parts:
+            # 회사명이 하나도 안 맞으면 결과가 0건인 게 맞다. 전체로 되돌리면
+            # 필터를 무시하는 셈이 된다.
+            return np.empty(0, dtype=np.int64)
+        return parts[0] if len(parts) == 1 else np.unique(np.concatenate(parts))
 
     def search(
         self, query: str, *, k: int = 10, flt: RetrievalFilter | None = None,
     ) -> list[tuple[ChunkSchema, float]]:
         q = np.asarray(self.embedding_provider.embed_query(query), dtype=np.float32)
 
-        if self.matrix.dtype == np.float32:
-            scores = self.matrix @ q
+        # 회사가 지정됐으면 그 회사 행만 본다(결과 동일, 계산량만 감소).
+        rows = self._rows_for(flt)
+        matrix = self.matrix if rows is None else self.matrix[rows]
+
+        if matrix.dtype == np.float32:
+            scores = matrix @ q
         else:
             # fp16 저장 모드: 샤드로 잘라 변환하며 계산(메모리 절반)
-            scores = np.empty(self.matrix.shape[0], dtype=np.float32)
+            scores = np.empty(matrix.shape[0], dtype=np.float32)
             STEP = 50_000
-            for s in range(0, self.matrix.shape[0], STEP):
-                e = min(s + STEP, self.matrix.shape[0])
-                scores[s:e] = self.matrix[s:e].astype(np.float32) @ q
+            for s in range(0, matrix.shape[0], STEP):
+                e = min(s + STEP, matrix.shape[0])
+                scores[s:e] = matrix[s:e].astype(np.float32) @ q
 
         # 후보 pool 결정.
         #
@@ -106,7 +141,7 @@ class NumpyDenseRetriever:
 
         out: list[tuple[ChunkSchema, float]] = []
         for i in order:
-            c = self.chunks[int(i)]
+            c = self.chunks[int(i) if rows is None else int(rows[int(i)])]
             if flt is not None and not flt.matches(c):
                 continue
             out.append((c, float(scores[i])))

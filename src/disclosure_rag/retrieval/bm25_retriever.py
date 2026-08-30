@@ -65,9 +65,26 @@ class BM25Retriever:
         if flt is not None and flt.is_selective:
             max_overfetch = max(max_overfetch, len(self._ids))
 
+        # 회사가 지정됐으면 **그 회사 문서만 점수를 남긴다**(weight_mask).
+        # 전역 상위 N을 먼저 뽑고 파이썬에서 거르면, 대상 회사의 청크가 드문
+        # 공시일수록 fetch_k 를 4배씩 키우며 626,497건까지 훑게 된다. 그게
+        # 지연시간의 주범이었다(2026-08-31 실측: lookup_form 검색 1회 67초,
+        # 정기공시는 같은 코드로 3.4초 — 회사당 청크 밀도 차이).
+        #
+        # 마스크를 씌우면 통과 대상이 상위에 모이므로 fetch_k 를 키울 일이 없다.
+        # 결과는 동일하다 — 어차피 필터가 떨어뜨릴 문서를 미리 0점으로 만들 뿐이다.
+        mask = self._company_mask(flt)
+        if mask is not None:
+            allowed = int(mask.sum())
+            if allowed == 0:
+                return []
+            max_overfetch = min(max_overfetch, max(allowed, k))
+
         fetch_k = min(max(k * overfetch_multiplier, k), max_overfetch, len(self._ids))
         while True:
-            ids, scores = self._bm25.retrieve([query_tokens], k=fetch_k, show_progress=False)
+            ids, scores = self._bm25.retrieve([query_tokens], k=fetch_k,
+                                              show_progress=False,
+                                              **({"weight_mask": mask} if mask is not None else {}))
             candidates = list(zip(ids[0].tolist(), scores[0].tolist()))
 
             results: list[tuple[ChunkSchema, float]] = []
@@ -85,6 +102,27 @@ class BM25Retriever:
                 return results
             fetch_k = min(fetch_k * 4, max_overfetch, len(self._ids))
 
+
+    def _company_mask(self, flt):
+        """회사 필터를 bm25s 의 weight_mask 로. 회사 지정이 없으면 None."""
+        names = list(getattr(flt, "companies", None) or []) if flt is not None else []
+        if not names:
+            return None
+        cache = getattr(self, "_mask_cache", None)
+        if cache is None:
+            cache = self._mask_cache = {}
+        key = tuple(sorted(names))
+        if key in cache:
+            return cache[key]
+        import numpy as _np
+        wanted = set(names)
+        mask = _np.zeros(len(self._ids), dtype=_np.float32)
+        for i, cid in enumerate(self._ids):
+            chunk = self.chunks_by_id.get(cid)
+            if chunk is not None and getattr(chunk, "company", None) in wanted:
+                mask[i] = 1.0
+        cache[key] = mask
+        return mask
 
     # ------------------------------------------------------------------ 영속화
     # 기존 파이프라인은 프로세스를 켤 때마다 45만 chunk 를 처음부터 다시 색인했다
