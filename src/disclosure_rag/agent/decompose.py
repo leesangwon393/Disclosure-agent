@@ -34,6 +34,7 @@ S007~S014 는 `answer_mode` 가 **closed** 다(답은 숫자 하나). open 일 �
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Sequence
 
@@ -65,6 +66,7 @@ class DecomposeResult:
     merged: list[tuple[Any, float]] = field(default_factory=list)
     per_query: dict[str, int] = field(default_factory=dict)   # label -> 회수 건수
     empty_labels: list[str] = field(default_factory=list)     # 0건인 하위 질의
+    notes: list[str] = field(default_factory=list)            # 분해하면서 알게 된 한계
 
     @property
     def decomposed(self) -> bool:
@@ -97,6 +99,9 @@ def _narrow(plan: QueryPlan, **overrides) -> QueryPlan:
             setattr(clone, name, list(value))
     if isinstance(getattr(clone, "source", None), dict):
         clone.source = dict(clone.source)
+    mentions = getattr(clone, "company_mentions", None)
+    if isinstance(mentions, dict):
+        clone.company_mentions = {k: list(v) for k, v in mentions.items()}
     for key, value in overrides.items():
         setattr(clone, key, value)
     # 하위 질의는 이미 쪼개진 단위라 더 쪼개지 않는다.
@@ -116,6 +121,39 @@ def _narrow(plan: QueryPlan, **overrides) -> QueryPlan:
 # 그럴 때는 쪼개지 말고 한 번에 넓게 찾는 편이 낫다. Field Schema 의
 # `expected_fields` 도 같은 이유로 유형 3종 이상이면 빈 목록을 돌려준다.
 MAX_SUB_QUERIES = 3
+
+# 회사 축만 상한이 다르다.
+#
+# 공시유형·기간 축에서 상한이 3인 이유는 실측 실패 때문이다 — "주요사항보고서
+# 공시가 정정된 내역"이 유형 19종에 걸려 19번 검색할 뻔했다. 그런 질문은
+# 대상을 특정하지 못한 것이라 넓게 한 번 찾는 게 맞다.
+#
+# 회사는 다르다. "A와 B와 C와 D의 매출액을 비교해줘"는 대상을 **정확히**
+# 지목한 질문이고, 회사마다 답이 따로 있어야 한다. 상한 3에 걸려 한 번에
+# 찾으면 어느 회사 값인지 섞인다(2026-08-31 배포 테스트에서 4개 회사 질문이
+# 분해 없이 k=40 한 번으로 처리되는 것을 확인).
+#
+# 회사 필터가 걸린 검색은 해당 회사 청크만 계산하므로(회사별 사전선별)
+# 회사 수가 늘어도 어휘·벡터 검색 총량은 거의 그대로다. 늘어나는 건
+# 재순위(cross-encoder) 호출 횟수뿐이라 상한을 넉넉히 둔다.
+#
+# 상한을 넘으면 쪼개지 않고 한 번에 넓게 찾는데, **그때는 회사 귀속이 틀릴
+# 수 있다** — 필터가 12곳을 모두 허용하므로 A사 값을 B사 문서(특수관계자·
+# 최대주주 현황 등)에서 집어올 수 있다. 그래서 그 사실을 결과에 남긴다.
+MAX_COMPANY_SUB_QUERIES = 12
+
+
+def decompose_notes(plan: QueryPlan) -> list[str]:
+    """분해가 감당하지 못한 부분을 문장으로 남긴다.
+
+    조용히 넘어가면 "왜 4곳은 정확한데 15곳은 값이 섞이지" 를 나중에 로그
+    한 줄 없이 다시 조사하게 된다.
+    """
+    if plan.needs_decomposition and len(plan.companies) > MAX_COMPANY_SUB_QUERIES:
+        return [f"회사 {len(plan.companies)}곳은 회사별 분해 상한"
+                f"({MAX_COMPANY_SUB_QUERIES})을 넘어 한 번에 검색했다 — "
+                f"회사별 값 귀속이 섞일 수 있다"]
+    return []
 
 
 def build_sub_queries(plan: QueryPlan, question: str) -> list[SubQuery]:
@@ -137,9 +175,12 @@ def build_sub_queries(plan: QueryPlan, question: str) -> list[SubQuery]:
     def _too_many(values) -> bool:
         return len(values) > MAX_SUB_QUERIES
 
-    if len(plan.companies) >= 2 and not _too_many(plan.companies):
+    if 2 <= len(plan.companies) <= MAX_COMPANY_SUB_QUERIES:
         return [
-            SubQuery(text=_focus(question, company), kind="company", label=f"company:{company}",
+            SubQuery(text=_focus(question, company,
+                                 drop=_company_surfaces(plan),
+                                 keep=_surfaces_of(plan, company)),
+                     kind="company", label=f"company:{company}",
                      plan=_narrow(plan, companies=[company]), top_k=per_target)
             for company in plan.companies
         ]
@@ -172,13 +213,63 @@ def _n_targets(plan: QueryPlan) -> int:
     return max(len(plan.companies), len(plan.report_kinds), len(plan.periods), 1)
 
 
-def _focus(question: str, term: str) -> str:
-    """하위 질의 문장. 원 질문을 유지한 채 초점을 앞에 붙인다.
+def _surfaces_of(plan: QueryPlan, company: str) -> list[str]:
+    """이 회사를 가리키는 모든 표기(정식명 + 질문에 쓰인 표기)."""
+    out = [company]
+    for surface in (getattr(plan, "company_mentions", None) or {}).get(company, []):
+        if surface not in out:
+            out.append(surface)
+    return out
+
+
+def _company_surfaces(plan: QueryPlan) -> list[str]:
+    """계획에 든 모든 회사의 모든 표기."""
+    out: list[str] = []
+    for company in plan.companies:
+        for surface in _surfaces_of(plan, company):
+            if surface not in out:
+                out.append(surface)
+    return out
+
+
+def _focus(question: str, term: str, *, drop: Sequence[str] = (),
+           keep: Sequence[str] = ()) -> str:
+    """하위 질의 문장. 원 질문을 유지한 채 초점을 앞에 붙이고, **다른 대상의
+    이름은 지운다.**
 
     원 질문을 통째로 버리고 `"삼성전자 계약금액"` 같은 짧은 문장을 만들면
     무엇을 묻는지가 사라진다("최대"인지 "최초"인지 등). 그래서 덧붙인다.
+
+    다른 회사 이름을 왜 지우나 (2026-08-31, 배포 테스트에서 드러남)
+    -----------------------------------------------------------
+        질문      "삼성전자와 삼성SDI의 2025년 연결 매출액을 비교해줘"
+        하위질의  "삼성전자 기준으로: 삼성전자와 삼성SDI의 2025년 연결 매출액..."
+
+    회사 필터는 삼성전자로 걸리지만 **질의 텍스트에 '삼성SDI' 가 남아 있어서**
+    어휘 검색이 그 낱말을 점수에 쓴다. 그러면 삼성전자 문서 중에서도
+    특수관계자·타법인출자처럼 상대 회사가 언급된 청크가 위로 올라온다.
+    정작 필요한 건 삼성전자 자신의 연결재무제표다.
+
+    이름이 서로 포함 관계일 수 있으므로(`LG` vs `LG에너지솔루션`) 긴 것부터
+    지우고, 초점 대상 자신을 품은 이름은 건드리지 않는다.
     """
-    return f"{term} 기준으로: {question}"
+    text = question
+    protected = {term, *(k for k in keep if k)}
+    others = sorted((d for d in drop if d and d not in protected), key=len, reverse=True)
+    for other in others:
+        # 초점 대상을 가리키는 표기의 일부라면 지우면 안 된다
+        # ("LG" 를 지우면서 "LG에너지솔루션" 질의를 망가뜨리는 경우)
+        if any(other in kept for kept in protected):
+            continue
+        text = text.replace(other, " ")
+    # 이름을 지우면 조사만 남는다("삼성전자와 와 과 의 자산총계를").
+    # Kiwi 가 조사를 대부분 버리므로 점수에는 거의 영향이 없지만, 남겨두면
+    # 로그를 읽기 어렵고 다른 토크나이저로 바꿨을 때 잡음이 된다.
+    text = re.sub(r"(?:^|\s)[와과및의은는이가]\s", " ", text)
+    text = re.sub(r"(?:\s*,\s*)+", ", ", text)
+    text = re.sub(r"^[\s,]+", "", text)
+    text = re.sub(r"\s{2,}", " ", text).strip()
+    return f"{term} 기준으로: {text}"
 
 
 def merge_results(
@@ -233,9 +324,12 @@ def decompose_and_search(
         results.append((sq, hits))
 
     merged, counts, empty = merge_results(results)
+    notes = decompose_notes(plan)
+    for note in notes:
+        logger.warning("[DECOMPOSE] %s", note)
     return DecomposeResult(sub_queries=subs, merged=merged,
-                           per_query=counts, empty_labels=empty)
+                           per_query=counts, empty_labels=empty, notes=notes)
 
 
-__all__ = ["MAX_SUB_QUERIES", "SubQuery", "DecomposeResult", "build_sub_queries",
-           "merge_results", "decompose_and_search"]
+__all__ = ["MAX_SUB_QUERIES", "MAX_COMPANY_SUB_QUERIES", "SubQuery", "DecomposeResult",
+           "build_sub_queries", "decompose_notes", "merge_results", "decompose_and_search"]

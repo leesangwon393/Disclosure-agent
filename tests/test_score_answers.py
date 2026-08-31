@@ -549,3 +549,26 @@ def test_body_only_keeps_content_and_drops_ids():
     body = _body_only(text)
     assert "1,000원" in body and "근거" in body
     assert "20240101000001" not in body and "C1" not in body
+
+
+# --------------------------------------------------------------------------- 지연 분해 (2026-08-31)
+
+def test_csv_columns_are_the_union_of_all_rows(tmp_path):
+    """첫 행에 없는 컬럼이 뒷 행에 있어도 저장이 죽으면 안 된다.
+
+    조기 종료 문항(게이트)은 ms_rerank 가 없다. 그런 문항이 1번으로 오면
+    첫 행 기준으로 헤더를 잡던 예전 코드는 DictWriter ValueError 로 죽어
+    **측정 결과 전체가 저장되지 않는다.** 1시간 30분짜리 실행이 날아간다.
+    """
+    rows = [_v2_row(stopped_at="scope_gate", ms_total=12.0),
+            _v2_row(ms_total=9000.0, ms_rerank=4200.0, ms_bm25=300.0)]
+    _write(tmp_path, {"mode": "full", "pipeline": "v2"}, _aggregate(rows, "full"), rows)
+    header = (tmp_path / "results.csv").read_text(encoding="utf-8-sig").splitlines()[0]
+    assert "ms_rerank" in header and "ms_total" in header
+
+
+def test_latency_breakdown_lands_in_metrics():
+    m = _aggregate([_v2_row(ms_total=1000.0, ms_rerank=400.0),
+                    _v2_row(ms_total=3000.0, ms_rerank=1200.0)], "full")
+    assert m["latency_breakdown"]["rerank"]["median_ms"] == 1200.0
+    assert m["latency_breakdown"]["total"]["n"] == 2

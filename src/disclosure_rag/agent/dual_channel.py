@@ -265,6 +265,7 @@ class DualChannelRetriever:
                     "channel_counts": trace.channel_counts,
                     "fused_count": trace.fused_count,
                     "reranked": trace.reranked,
+                    "search_ms": dict(getattr(trace, "timings_ms", {}) or {}),
                     "version_dedup": asdict(dedup_report),
                 }
             raw = self.unstructured.search(query, k=top_k, flt=retrieval_filter)
@@ -324,10 +325,13 @@ class DualChannelRetriever:
             "unstructured_error": unstructured_error, "facts_error": facts_error,
             "facts_order_by": self._ORDER_BY.get(getattr(plan, "aggregation", "none"), "date"),
         }
+        search_ms = diagnostics.get("search_ms") or {}
+        breakdown = " ".join(f"{name}={value:.0f}ms" for name, value in search_ms.items())
         logger.info(
             "[DUAL] facts_executed=%s structured_fields=%s fact_rows=%d "
-            "unstructured=%d reports=%d elapsed_ms=%.1f",
-            bool(fields), fields, len(facts), len(unstructured_results), len(report_order), elapsed_ms,
+            "unstructured=%d reports=%d facts_ms=%.1f elapsed_ms=%.1f%s",
+            bool(fields), fields, len(facts), len(unstructured_results), len(report_order),
+            facts_ms, elapsed_ms, f" | {breakdown}" if breakdown else "",
         )
         return DualChannelResult(
             query=query, unstructured_results=unstructured_results, facts=facts,

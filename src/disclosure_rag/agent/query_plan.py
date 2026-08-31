@@ -93,6 +93,11 @@ class QueryPlan:
 
     # --- 검색 대상 ----------------------------------------------------------
     companies: list[str] = field(default_factory=list)
+    # 정식 회사명 -> 질문에 실제로 쓰인 표기. 질문이 "삼성SDI" 라고 써도
+    # companies 에는 정식명("삼성에스디아이")이 들어간다. 하위 질의에서 다른
+    # 회사 이름을 지울 때 정식명만 지우면 **질문에 적힌 표기가 그대로 남아**
+    # 어휘 검색이 그 낱말을 점수에 쓴다(회사 귀속 오류의 원인).
+    company_mentions: dict[str, list[str]] = field(default_factory=dict)
     periods: list[str] = field(default_factory=list)
     report_types: list[str] = field(default_factory=list)   # doc_group
     report_kinds: list[str] = field(default_factory=list)   # field_schema 의 유형명
@@ -409,6 +414,15 @@ class RulePlanBuilder:
             entities = self.extractor.extract(query)
 
         companies = list(getattr(entities, "companies", []) or [])
+        mentions: dict[str, list[str]] = {}
+        for span in getattr(entities, "company_spans", []) or []:
+            try:
+                start, end, corp = span
+            except (TypeError, ValueError):
+                continue
+            surface = q[start:end]
+            if surface and surface not in mentions.setdefault(corp, []):
+                mentions[corp].append(surface)
         raw_periods = list(getattr(entities, "period", []) or [])
         metrics = list(getattr(entities, "metrics", []) or [])
         if companies:
@@ -477,6 +491,7 @@ class RulePlanBuilder:
             answer_mode=mode,
             task=task,
             companies=companies,
+            company_mentions=mentions,
             periods=periods,
             report_types=report_types,
             report_kinds=report_kinds,

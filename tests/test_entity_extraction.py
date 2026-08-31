@@ -75,3 +75,33 @@ def test_query_normalize_repeated_company_reuses_number(extractor):
     normalized = normalize_query(e)
     assert normalized.count("[COMPANY_1]") == 2
     assert normalized.count("[COMPANY_2]") == 1
+
+
+# --------------------------------------------------------------------------- 다른 회사 오인 (2026-08-31)
+
+@pytest.mark.parametrize("query, wrong", [
+    ("카카오뱅크의 사업보고서상 직원 수는 몇 명인가?", "카카오"),
+    ("카카오모빌리티의 최근 영업이익은 얼마인가?", "카카오"),
+    ("카카오페이증권의 자본총계를 알려줘.", "카카오"),
+])
+def test_longer_company_name_is_not_mistaken_for_its_prefix(extractor, query, wrong):
+    """'카카오뱅크' 를 '카카오' 로 잡으면 **다른 회사 답을 준다.**
+
+    코퍼스에 없는 회사이므로 아무것도 안 잡히는 게 맞다. 그래야 범위 게이트가
+    "코퍼스에 없는 회사입니다" 로 끝내고 HCX 도 안 부른다.
+    (gold_abstention 160문항 중 3건이 이 경로로 틀린 답을 내고 있었다.)
+    """
+    assert wrong not in extractor.extract(query).companies
+    assert extractor.extract(query).companies == []
+
+
+@pytest.mark.parametrize("query, expected", [
+    ("삼성전자와 SK하이닉스 비교", ["삼성전자", "SK하이닉스"]),
+    ("현대차의 2024년 매출액", ["현대자동차"]),
+    ("삼성전자를 알려줘", ["삼성전자"]),
+    ("삼성전자에서 나온 공시", ["삼성전자"]),
+    ("삼성전자는 얼마인가", ["삼성전자"]),
+])
+def test_particles_after_a_company_name_are_still_the_same_company(extractor, query, expected):
+    """조사는 이름의 일부가 아니다 — 여기서 막으면 정상 질문이 전부 죽는다."""
+    assert extractor.extract(query).companies == expected

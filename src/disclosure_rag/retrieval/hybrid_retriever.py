@@ -13,6 +13,7 @@ Dense/Sparse/Reranker 를 빼면 자동으로 "BM25 only" 로 동작한다 — �
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -47,6 +48,8 @@ class HybridSearchTrace:
     channel_counts: dict[str, int] = field(default_factory=dict)
     fused_count: int = 0
     reranked: bool = False
+    # 단계별 소요 시간(ms). 추정하지 말고 재서 고치기 위한 계측값이다.
+    timings_ms: dict[str, float] = field(default_factory=dict)
 
 
 class HybridRetriever:
@@ -93,30 +96,48 @@ class HybridRetriever:
         rerank_top_n: int = 50,
     ) -> HybridSearchTrace:
         """BM25/Dense/Sparse만 검색·융합하고 채널 진단을 돌려준다."""
+        timings: dict[str, float] = {}
+
+        def _timed(name: str, fn):
+            started = time.perf_counter()
+            try:
+                return fn()
+            finally:
+                timings[name] = round((time.perf_counter() - started) * 1000, 2)
+
         named: dict[str, list[tuple[ChunkSchema, float]]] = {
-            "bm25": self.bm25.search(query, k=candidate_k, flt=flt)
+            "bm25": _timed("bm25", lambda: self.bm25.search(query, k=candidate_k, flt=flt))
         }
         if self.dense is not None:
-            named["dense"] = self.dense.search(query, k=candidate_k, flt=flt)
+            named["dense"] = _timed(
+                "dense", lambda: self.dense.search(query, k=candidate_k, flt=flt)
+            )
         if self.sparse is not None:
-            named["sparse"] = self.sparse.search(query, k=candidate_k, flt=flt)
+            named["sparse"] = _timed(
+                "sparse", lambda: self.sparse.search(query, k=candidate_k, flt=flt)
+            )
 
         pool = max(k, rerank_top_n if self.reranker is not None else k)
-        if len(named) == 1:
-            fused = named["bm25"][:pool]
-        elif self.fusion == "rrf":
-            fused = reciprocal_rank_fusion(list(named.values()), k=rrf_k, top_k=pool)
-        else:
-            fused = normalized_weighted_fusion(named, weights=self.weights, top_k=pool)
+
+        def _fuse():
+            if len(named) == 1:
+                return named["bm25"][:pool]
+            if self.fusion == "rrf":
+                return reciprocal_rank_fusion(list(named.values()), k=rrf_k, top_k=pool)
+            return normalized_weighted_fusion(named, weights=self.weights, top_k=pool)
+
+        fused = _timed("fusion", _fuse)
 
         fused_count = len(fused)
         if self.reranker is not None:
-            results = self.reranker.rerank(query, fused, top_k=k)
+            results = _timed("rerank", lambda: self.reranker.rerank(query, fused, top_k=k))
         else:
             results = fused[:k]
+        timings["total"] = round(sum(timings.values()), 2)
         return HybridSearchTrace(
             results=results,
             channel_counts={name: len(rows) for name, rows in named.items()},
             fused_count=fused_count,
             reranked=self.reranker is not None,
+            timings_ms=timings,
         )

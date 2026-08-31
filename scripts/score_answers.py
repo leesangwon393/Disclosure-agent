@@ -595,11 +595,13 @@ def _run_v2(ask, rows: list[dict]) -> list[dict]:
             stopped, hcx_calls, retries = res.stopped_at, res.hcx_calls, res.retries
             plan = res.plan
             validation = res.validation_result
+            timing = dict(getattr(res, "timing_ms", None) or {})
         except Exception as e:  # noqa: BLE001
             logger.error("[%d] 실패 %s: %s", i, type(e).__name__, e)
             answer, cited, retrieved = "", set(), set()
             stopped, hcx_calls, retries, plan = "error", 0, 0, None
             validation = None
+            timing = {}
             error = f"{type(e).__name__}: {e}"
         elapsed = time.time() - t
 
@@ -668,6 +670,10 @@ def _run_v2(ask, rows: list[dict]) -> list[dict]:
             "answer_mode": getattr(plan, "answer_mode", ""),
             "task": getattr(plan, "task", ""),
             "error": error, "elapsed_sec": round(elapsed, 2),
+            # 지연 분해 — 어디가 느린지 추정 대신 측정값으로 본다(ms)
+            **{f"ms_{name}": round(value, 1)
+               for name, value in timing.items() if name != "searches"},
+            "n_searches": int(timing.get("searches", 0)),
         })
         logger.info("[%d/%d] %-14s %-16s HCX%d %5.1fs  %s", i, len(rows),
                     out[-1]["label"], stopped, hcx_calls, elapsed, row["query"][:44])
@@ -816,6 +822,23 @@ def _aggregate(rows: list[dict], mode: str) -> dict:
         "latency_p95_sec": lat[max(0, int(n * 0.95) - 1)] if lat else 0,
         "latency_max_sec": lat[-1] if lat else 0,
     }
+    # 지연 분해 — 어느 단계가 병목인지 중앙값으로 본다. 평균은 한 문항이
+    # 크게 튀면 통째로 왜곡되므로 중앙값을 같이 남긴다.
+    stage_keys = sorted({k for r in rows for k in r if k.startswith("ms_")})
+    if stage_keys:
+        breakdown = {}
+        for key in stage_keys:
+            vals = sorted(r[key] for r in rows if isinstance(r.get(key), (int, float)))
+            if not vals:
+                continue
+            breakdown[key[3:]] = {
+                "median_ms": round(vals[len(vals) // 2], 1),
+                "mean_ms": round(sum(vals) / len(vals), 1),
+                "max_ms": round(vals[-1], 1),
+                "n": len(vals),
+            }
+        metrics["latency_breakdown"] = breakdown
+
     for key in _RATE_KEYS:
         if rows and key in rows[0]:
             metrics[key] = round(sum(r[key] for r in rows) / n, 4)
@@ -901,8 +924,18 @@ def _write(out_dir: Path, config: dict, metrics: dict, rows: list[dict]) -> None
                                    ensure_ascii=False) + "\n")
     if rows:
         csv_rows = [{k: v for k, v in r.items() if k != "answer_full"} for r in rows]
+        # 열 이름은 **모든 행의 합집합**이다. 첫 행 기준으로 잡으면, 조기
+        # 종료한 문항이 1번으로 오는 순간 뒤 행의 ms_rerank 같은 열에서
+        # DictWriter 가 ValueError 로 죽는다 — 측정 전체가 날아간다.
+        fieldnames: list[str] = []
+        seen: set[str] = set()
+        for row in csv_rows:
+            for key in row:
+                if key not in seen:
+                    seen.add(key)
+                    fieldnames.append(key)
         with (out_dir / "results.csv").open("w", newline="", encoding="utf-8-sig") as f:
-            w = csv.DictWriter(f, fieldnames=list(csv_rows[0].keys()))
+            w = csv.DictWriter(f, fieldnames=fieldnames, restval="")
             w.writeheader()
             w.writerows(csv_rows)
     bad = [r for r in rows if r["label"] not in ("정답", "상한도달")]

@@ -136,11 +136,21 @@ def unknown_subject(question: str, registry: RegistryLike) -> str | None:
     return name
 
 
-def _clarification_reason(plan: QueryPlan) -> str | None:
-    """거부가 아니라 역질문이 필요한 명백한 빈칸만 찾는다."""
+def _clarification_reason(plan: QueryPlan, *, can_fill_blanks: bool = False) -> str | None:
+    """거부가 아니라 역질문이 필요한 명백한 빈칸만 찾는다.
+
+    `can_fill_blanks` 는 뒤에 계획 보완(2b, HCX)이 남아 있다는 뜻이다.
+    그때는 answer_mode/task 빈칸으로 되묻지 않는다 — 그건 사용자에게 물을
+    것이 아니라 **우리가 채울 칸**이다.
+
+    실측(2026-08-31): "삼성전자의 2024년 매출액은?" 은 규칙만으로는
+    mode/task 가 unknown 이라 역질문으로 끝났다. 사람이 실제로 이렇게 묻는데
+    되묻는 건 데모에서 치명적이다. ("...얼마인가?" 로 물으면 정상 동작했다 —
+    문장 끝 표현 하나로 갈렸다.)
+    """
     if not plan.companies:
         return "회사명이 필요합니다."
-    if plan.answer_mode == "unknown" or plan.task == "unknown":
+    if not can_fill_blanks and (plan.answer_mode == "unknown" or plan.task == "unknown"):
         return "알고 싶은 항목이나 작업을 특정해 주세요."
     if (plan.task == "summarize" and not plan.report_types and not plan.report_kinds
             and not plan.periods and not plan.expected_fields):
@@ -150,7 +160,8 @@ def _clarification_reason(plan: QueryPlan) -> str | None:
     return None
 
 
-def evaluate_scope(plan: QueryPlan, question: str, registry: RegistryLike) -> ScopeDecision:
+def evaluate_scope(plan: QueryPlan, question: str, registry: RegistryLike,
+                   *, can_fill_blanks: bool = False) -> ScopeDecision:
     """QueryPlan과 Entity Registry를 읽어 범위를 판정한다.
 
     이 함수는 plan을 바꾸지 않는다. 변경이 필요한 온라인 파이프라인은
@@ -175,7 +186,7 @@ def evaluate_scope(plan: QueryPlan, question: str, registry: RegistryLike) -> Sc
                 reason=f"코퍼스에 없는 주체: {unknown_name}",
                 entity_types={unknown_name: []},
             )
-        clarification = _clarification_reason(plan)
+        clarification = _clarification_reason(plan, can_fill_blanks=can_fill_blanks)
         return ScopeDecision(
             scope="possibly_scope", action="proceed",
             reason="회사를 특정하지 못했으므로 검색 또는 역질문이 필요함",
@@ -185,7 +196,7 @@ def evaluate_scope(plan: QueryPlan, question: str, registry: RegistryLike) -> Sc
 
     unknown = [company for company, types in entity_types.items() if not types]
     if unknown:
-        clarification = _clarification_reason(plan)
+        clarification = _clarification_reason(plan, can_fill_blanks=can_fill_blanks)
         return ScopeDecision(
             scope="possibly_scope", action="proceed",
             reason=("레지스트리에 없는 주체가 있지만 검색 전에는 거부하지 않음: "
@@ -194,7 +205,7 @@ def evaluate_scope(plan: QueryPlan, question: str, registry: RegistryLike) -> Sc
             needs_clarification=bool(clarification), clarification_reason=clarification,
         )
 
-    clarification = _clarification_reason(plan)
+    clarification = _clarification_reason(plan, can_fill_blanks=can_fill_blanks)
     return ScopeDecision(
         scope="in_scope", action="proceed",
         reason="Entity Registry에 코퍼스 등장 주체로 확인됨",
@@ -203,9 +214,10 @@ def evaluate_scope(plan: QueryPlan, question: str, registry: RegistryLike) -> Sc
     )
 
 
-def apply_scope_gate(plan: QueryPlan, question: str, registry: RegistryLike) -> ScopeDecision:
+def apply_scope_gate(plan: QueryPlan, question: str, registry: RegistryLike,
+                     *, can_fill_blanks: bool = False) -> ScopeDecision:
     """판정 결과를 QueryPlan의 scope 필드에 기록하고 반환한다."""
-    decision = evaluate_scope(plan, question, registry)
+    decision = evaluate_scope(plan, question, registry, can_fill_blanks=can_fill_blanks)
     plan.scope = decision.scope
     plan.scope_reason = decision.reason
     plan.source["scope"] = "rule"

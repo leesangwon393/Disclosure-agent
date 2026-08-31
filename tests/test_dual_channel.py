@@ -287,3 +287,42 @@ def test_hybrid_trace_contains_only_ranked_search_channels():
     assert trace.results == normal
     assert set(trace.channel_counts) == {"bm25", "dense", "sparse"}
     assert "facts" not in trace.channel_counts
+
+
+def test_hybrid_trace_records_per_stage_timings():
+    """단계별 소요 시간이 실제로 기록되는지.
+
+    '검색이 느리다'까지는 알아도 어느 단계가 느린지 모르면 추측으로 고치게
+    된다. 이 계측이 빠지면 그 상태로 되돌아간다.
+    """
+    chunks = [_chunk("c1", "r1"), _chunk("c2", "r2")]
+    hybrid = HybridRetriever(
+        _StaticSearcher([(chunks[0], 2.0), (chunks[1], 1.0)]),
+        dense=_StaticSearcher([(chunks[1], 0.9)]),
+        sparse=_StaticSearcher([(chunks[0], 0.8)]),
+        fusion="rrf",
+    )
+
+    trace = hybrid.search_with_trace("계약", k=2)
+
+    assert {"bm25", "dense", "sparse", "fusion", "total"} <= set(trace.timings_ms)
+    assert "rerank" not in trace.timings_ms          # reranker 가 없으니 없어야 한다
+    assert all(value >= 0 for value in trace.timings_ms.values())
+
+
+def test_hybrid_trace_timings_include_rerank_when_present():
+    chunks = [_chunk("c1", "r1"), _chunk("c2", "r2")]
+
+    class _Reranker:
+        def rerank(self, _query, candidates, *, top_k):
+            return candidates[:top_k]
+
+    hybrid = HybridRetriever(
+        _StaticSearcher([(chunks[0], 2.0), (chunks[1], 1.0)]),
+        reranker=_Reranker(),
+    )
+
+    trace = hybrid.search_with_trace("계약", k=1)
+
+    assert "rerank" in trace.timings_ms
+    assert trace.reranked is True
