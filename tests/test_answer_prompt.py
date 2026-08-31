@@ -191,3 +191,19 @@ def test_evidence_whitelist_includes_every_block_we_actually_build():
     p = build_answer_prompt(QueryPlan(answer_mode="closed", task="lookup"))
     for block in ("[EVIDENCE]", "[FACT]", "[전수 확인]"):
         assert block in p, block
+
+
+def test_prompt_forbids_taking_a_value_from_another_companys_document():
+    """A사 값을 B사 공시에서 가져오지 말라는 규칙이 있어야 한다.
+
+    회사의 사업보고서에는 최대주주·특수관계자 재무현황처럼 **다른 회사 수치**가
+    실린다. 근거 블록에 '회사:' 라벨은 이미 붙어 있었지만, 그걸 어떻게 쓰라는
+    말이 프롬프트에 없어서 모델이 그 표를 그대로 썼다
+    (2026-08-31 배포 테스트: 삼성전자 값이 삼성SDI 사업보고서에서 나왔다).
+    """
+    from disclosure_rag.agent.answer_generator import build_answer_prompt
+    from disclosure_rag.agent.query_plan import QueryPlan
+
+    text = build_answer_prompt(QueryPlan(answer_mode="closed", task="compare"))
+    assert "회사:" in text
+    assert "최대주주" in text
