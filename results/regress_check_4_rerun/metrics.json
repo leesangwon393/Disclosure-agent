@@ -1,0 +1,118 @@
+{
+  "mode": "full",
+  "n": 4,
+  "labels": {
+    "거부(근거있음)": 2,
+    "답변실패": 2
+  },
+  "label_rate": {
+    "거부(근거있음)": 0.5,
+    "답변실패": 0.5
+  },
+  "latency_mean_sec": 15.79,
+  "latency_p95_sec": 18.97,
+  "latency_max_sec": 24.99,
+  "latency_breakdown": {
+    "bm25": {
+      "median_ms": 505.6,
+      "mean_ms": 607.7,
+      "max_ms": 1252.3,
+      "n": 4
+    },
+    "dense": {
+      "median_ms": 287.9,
+      "mean_ms": 1711.8,
+      "max_ms": 6236.3,
+      "n": 4
+    },
+    "expand": {
+      "median_ms": 7.6,
+      "mean_ms": 8.2,
+      "max_ms": 11.8,
+      "n": 4
+    },
+    "facts": {
+      "median_ms": 5741.2,
+      "mean_ms": 4006.8,
+      "max_ms": 7897.2,
+      "n": 4
+    },
+    "fusion": {
+      "median_ms": 0.2,
+      "mean_ms": 0.2,
+      "max_ms": 0.5,
+      "n": 4
+    },
+    "hcx": {
+      "median_ms": 2169.3,
+      "mean_ms": 2129.0,
+      "max_ms": 2169.3,
+      "n": 2
+    },
+    "other": {
+      "median_ms": 0.0,
+      "mean_ms": 0.0,
+      "max_ms": 0.0,
+      "n": 4
+    },
+    "process": {
+      "median_ms": 1.0,
+      "mean_ms": 0.8,
+      "max_ms": 1.0,
+      "n": 4
+    },
+    "rerank": {
+      "median_ms": 17141.4,
+      "mean_ms": 11780.5,
+      "max_ms": 17930.2,
+      "n": 4
+    },
+    "sparse": {
+      "median_ms": 223.6,
+      "mean_ms": 180.2,
+      "max_ms": 335.6,
+      "n": 4
+    },
+    "total": {
+      "median_ms": 18970.0,
+      "mean_ms": 15785.5,
+      "max_ms": 24992.7,
+      "n": 4
+    }
+  },
+  "answer_hit": 0.0,
+  "evidence_hit": 1.0,
+  "refusal": 0.5,
+  "numbers_grounded": 0.5,
+  "has_citation": 0.5,
+  "validation_passed": 0.0,
+  "answer_hit_exact": 0.0,
+  "graded_hit": 0.0,
+  "graded_hit_n": 4,
+  "ungradeable_n": 0,
+  "answer_hit_given_evidence": 0.0,
+  "field_coverage": 0.75,
+  "field_coverage_n": 4,
+  "silent_omission_rate": 0.25,
+  "silent_omission_rate_n": 4,
+  "citation_recall": 0.5,
+  "citation_recall_n": 4,
+  "citation_precision": 1.0,
+  "citation_precision_n": 2,
+  "unit_stated": 0.0,
+  "unit_stated_n": 2,
+  "by_doc_group": {
+    "periodic": {
+      "n": 4,
+      "answer_hit": 0.0,
+      "evidence_hit": 1.0,
+      "refusal": 0.5,
+      "numbers_grounded": 0.5,
+      "has_citation": 0.5,
+      "validation_passed": 0.0,
+      "answer_hit_exact": 0.0,
+      "graded_hit": 0.0,
+      "gradeable_n": 4
+    }
+  }
+}

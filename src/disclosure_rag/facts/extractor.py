@@ -539,7 +539,15 @@ def extract_facts(
                 doc_id=row.doc_id, company=row.corp_name, corp_code=row.corp_code,
                 doc_group=row.doc_group, doc_subtype=row.doc_subtype,
                 report_name=parsed.document_name or row.report_nm,
-                filing_date=row.rcept_dt, period=None,
+                filing_date=row.rcept_dt,
+                # 회계기준일(base_year/base_month)로 채운다. 사업보고서는
+                # 회계연도 종료 후 2~3개월 뒤 접수되므로 filing_date 연도와
+                # 다르다(2026-09-01 발견, artifacts_v2 periodic facts 45.6%
+                # 영향). store.lookup()의 period 폴백은 filing_date 를 쓰므로
+                # 사업보고서만 매칭이 어긋났다. event 공시(row.base_year 없음)는
+                # 그대로 None -> lookup()의 filing_date 폴백이 담당한다.
+                period=(f"{row.base_year:04d}-{row.base_month:02d}"
+                        if row.base_year and row.base_month else None),
                 is_correction=row.is_correction,
                 is_latest=correction.is_latest,
                 correction_group_id=correction.correction_group_id,

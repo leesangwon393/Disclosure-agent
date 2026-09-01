@@ -87,19 +87,35 @@ class SparseRetriever:
 
         def pairs() -> Iterator[tuple[int, LexWeights]]:
             seen = 0
+            skipped_shards = 0
             for sh in shard_paths:
                 op = gzip.open if sh.suffix == ".gz" else open
-                with op(sh, "rt", encoding="utf-8") as f:
-                    for line in f:
-                        if not line.strip():
-                            continue
-                        d = json.loads(line)
-                        row = row_of.get(d["chunk_id"])
-                        if row is None:      # 스냅샷과 임베딩이 어긋난 조각은 건너뛴다
-                            continue
-                        seen += 1
-                        yield row, d["w"]
-            logger.info("[SPARSE] 샤드 %d개에서 %d chunk 적재", len(shard_paths), seen)
+                try:
+                    with op(sh, "rt", encoding="utf-8") as f:
+                        for line in f:
+                            if not line.strip():
+                                continue
+                            d = json.loads(line)
+                            row = row_of.get(d["chunk_id"])
+                            if row is None:      # 스냅샷과 임베딩이 어긋난 조각은 건너뛴다
+                                continue
+                            seen += 1
+                            yield row, d["w"]
+                except (OSError, EOFError, json.JSONDecodeError) as exc:
+                    # 샤드 파일 하나가 손상돼도(디스크 문제·불완전 복사 등) 전체
+                    # sparse 인덱스를 못 쓰게 만들면 안 된다 — BM25/dense/facts는
+                    # 멀쩡한데 sparse 샤드 1개 때문에 검색 전체가 죽는 건 손실이
+                    # 훨씬 크다(2026-09-01 발견: sparse_0005.jsonl.gz gzip 자체
+                    # 손상). 그 샤드의 나머지 chunk만 sparse 점수 없이 빠진다.
+                    skipped_shards += 1
+                    logger.warning(
+                        "[SPARSE] 샤드 손상으로 건너뜀: %s (%s: %s) — 이 샤드의 "
+                        "chunk는 sparse 채널 없이 BM25/dense로만 검색된다",
+                        sh, type(exc).__name__, exc,
+                    )
+                    continue
+            logger.info("[SPARSE] 샤드 %d개에서 %d chunk 적재%s", len(shard_paths), seen,
+                        f" (손상되어 건너뛴 샤드 {skipped_shards}개)" if skipped_shards else "")
 
         self._build(len(chunks), pairs())
         if self._docs.size == 0:
