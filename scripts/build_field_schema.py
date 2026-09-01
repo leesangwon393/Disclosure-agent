@@ -97,15 +97,52 @@ _PAREN = re.compile(r"\(([^()]{2,})\)")
 _DIGIT_RUN = re.compile(r"\d{3,}")          # "80,472원", "(기준일2023.12.31)", "…155분당…"
 _CORP_SUFFIX = re.compile(r"(주식회사|\(주\)|㈜)")
 
+# 2026-09-01: 정기공시 스키마를 처음 추가하면서 발견 — "SK텔레콤본사" 같은
+# 회사명+사업장 라벨이 필드명 후보로 새어 들어와, 회사명으로 조회할 때 그
+# 회사 자신이 "확인 안 된 필수항목"이 되어 (a) facts 조회가 주소·계열사
+# 목록에 파묻히고 (b) 충분성 검사가 절대 못 채우는 항목 때문에 최대
+# 재검색까지 다 돌아 300초 근처까지 느려지고 결국 거부로 끝난다.
+# 전수조사(2026-09-01): 90개사·323종·3,557건. `_CORP_SUFFIX`는 "㈜"/"주식회사"가
+# 붙은 것만 걸러서 "SK텔레콤"·"KT"·"NAVER"처럼 접미사 없는 이름은 통과했다.
+_REPORT_TYPE_LABELS = {"사업보고서", "분기보고서", "반기보고서"}
 
-def _is_parse_artifact(key: str) -> bool:
-    """항목명이 아니라 값이 잘못 들어온 것인가."""
+
+def _load_company_names(registry_path: Path = Path("artifacts_v2/registry/entities.json")) -> tuple[str, ...]:
+    """universe 회사명 + 별칭을 접두사 매칭용으로 로드한다. registry 가 없으면 빈 튜플(fail open)."""
+    if not registry_path.exists():
+        logger.warning("[SCHEMA] registry 없음(%s) — 회사명 오염 필터 없이 진행", registry_path)
+        return ()
+    reg = json.loads(registry_path.read_text(encoding="utf-8"))
+    names: set[str] = set()
+    for e in reg.get("entities", []):
+        if "universe" not in e.get("types", []):
+            continue
+        for n in [e.get("canonical_name")] + e.get("aliases", []):
+            n = normalize_field_key(n or "")
+            if len(n) >= 2:
+                names.add(n)
+    # 긴 이름부터 검사해야 짧은 이름의 부분집합 오매칭을 피한다.
+    return tuple(sorted(names, key=len, reverse=True))
+
+
+def _is_parse_artifact(key: str, company_names: tuple[str, ...] = ()) -> bool:
+    """항목명이 아니라 값(또는 회사명·문서유형 라벨)이 잘못 들어온 것인가."""
     if not key or len(key) > 60:
         return True
     if _DIGIT_RUN.search(key):
         return True
     if _CORP_SUFFIX.search(key):
         return True
+    if key in _REPORT_TYPE_LABELS:
+        return True
+    for name in company_names:
+        # 접두사 매칭(예: "SK텔레콤본사")뿐 아니라 완전 일치도 잡는다.
+        # 2026-09-01: "SK텔레콤" 이 다른 회사 보고서의 특수관계자거래 표에서
+        # 열 헤더로 쓰이며 **숫자 값을 가진 독립 키**로도 나타남을 발견했다
+        # (예: SK텔레콤=61,974). 회사명 자체가 재무항목일 리는 없으므로
+        # 길이가 같아도(완전 일치) 잡는다 — 원래는 접두사만 걸렀다.
+        if key.startswith(name):
+            return True
     return False
 
 
@@ -181,7 +218,10 @@ def _max_gap(ratios: list[float]) -> dict:
 
 
 def build(facts_path: Path, *, required_ratio: float = 0.75,
-          conditional_ratio: float = 0.20, min_docs: int = 10) -> dict:
+          conditional_ratio: float = 0.20, min_docs: int = 10,
+          registry_path: Path = Path("artifacts_v2/registry/entities.json")) -> dict:
+    company_names = _load_company_names(registry_path)
+    logger.info("[SCHEMA] 회사명 오염 필터: %d개 회사명 로드", len(company_names))
     db = sqlite3.connect(facts_path)
 
     doc_kind: dict[str, tuple[str, str]] = {}
@@ -199,7 +239,7 @@ def build(facts_path: Path, *, required_ratio: float = 0.75,
             continue
         _, kind = doc_kind[doc_id]
         key = normalize_field_key(key_norm)
-        if _is_parse_artifact(key):
+        if _is_parse_artifact(key, company_names):
             dropped[kind] += 1
             continue
         seen[(kind, key)].add(doc_id)
