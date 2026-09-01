@@ -38,6 +38,7 @@ periodic(재무제표)은 계정과목 정규화·연결/별도 구분·단위 �
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Iterable, MutableMapping
 
 from pydantic import BaseModel, Field
@@ -220,12 +221,89 @@ def normalize_key(key: str) -> tuple[str, str | None]:
     return k, unit
 
 
+# 한국 공시의 회계 표기 — 실측으로 확인한 것만 넣었다(2026-09-01, 청크 15만 개).
+#
+#   △59,917        음수. 표에 "[△는 부(-)의 값임]" 범례가 함께 온다 (690건+)
+#   1%p            퍼센트포인트. `%` 와 **다른 단위**다 (164건, 전부 해석 실패)
+#   63조 7,454억원  조·억 혼용. `_SCALE_RE` 는 단일 단위만 읽었다 (12,441건)
+#   69,406주 (주1)  숫자 뒤 주석 표시 (938건)
+#   ０             전각 숫자 (18건)
+#
+# 괄호 음수 `(4,935,379)` 는 이미 처리되고 있다(90,084건 음수 저장) — 손대지 않는다.
+_MINUS_MARKS = ("△", "▲", "▽", "▼")
+_FULLWIDTH_DIGITS = {ord("０") + i: ord("0") + i for i in range(10)}
+_FOOTNOTE_TAIL = re.compile(r"\s*(?:\(\s*주\s*\d*\s*\)|주\s*\d+\s*\)|\*+|＊+)\s*$")
+_PERCENT_POINT = re.compile(r"^(-?[\d,]+(?:\.\d+)?)\s*(?:%\s*[pP]|퍼센트\s*포인트|%포인트)$")
+# "63조 7,454억원", "1조 2,345억 6,789만원" 처럼 큰 단위부터 이어 붙인 금액
+_COMPOUND_UNIT = re.compile(r"([\d,]+(?:\.\d+)?)\s*(조|억|만|천)")
+_COMPOUND_OK = re.compile(r"^-?(?:[\d,]+(?:\.\d+)?\s*(?:조|억|만|천)\s*)+[\d,]*\s*원?$")
+
+
+def _strip_accounting_marks(text: str) -> tuple[str, bool]:
+    """세모 부호와 주석 표시를 떼어내고 음수 여부를 돌려준다."""
+    t = text.strip()
+    negative = False
+    while t[:1] in _MINUS_MARKS:
+        negative = True
+        t = t[1:].strip()
+    t = _FOOTNOTE_TAIL.sub("", t).strip()
+    return t, negative
+
+
+def _parse_compound_amount(text: str) -> float | None:
+    """"63조 7,454억원" -> 6_374_540_000_000. 단일 단위는 여기 안 온다."""
+    if not _COMPOUND_OK.match(text):
+        return None
+    matches = list(_COMPOUND_UNIT.finditer(text))
+    if len(matches) < 2:                     # 단일 단위는 기존 `_SCALE_RE` 가 본다
+        return None
+    total = 0.0
+    for m in matches:
+        try:
+            total += float(m.group(1).replace(",", "")) * _SCALE[m.group(2)]
+        except (ValueError, KeyError):
+            return None
+    # 단위 없이 남은 꼬리("… 6,789원")
+    tail = text[matches[-1].end():].strip().rstrip("원").strip()
+    if tail:
+        try:
+            total += float(tail.replace(",", ""))
+        except ValueError:
+            return None
+    return total
+
+
 def parse_value(value: str, *, key_unit: str | None = None, unit_value: str | None = None
                 ) -> tuple[float | None, str | None, str | None]:
     """값 문자열을 (숫자, 단위, 날짜) 로 해석한다. 해석 실패는 None — 지어내지 않는다."""
-    v = (value or "").strip()
+    # 전각 숫자(０１２)만 반각으로 바꾼다.
+    # NFKC 를 통째로 쓰면 안 된다 — `㈜LS` 가 `(주)LS` 로 바뀌어 회사 이름이
+    # 훼손된다. 최대주주 이름(value_owner)이 그 값으로 저장되므로 치명적이다.
+    v = unicodedata.normalize("NFC", value or "").strip().translate(_FULLWIDTH_DIGITS)
     if not v or v in _EMPTY_VALUES:
         return None, key_unit, None
+
+    # 퍼센트포인트는 `%` 와 다른 단위다. 5%->7% 는 "2%p 상승" 이지 "2% 상승" 이 아니다.
+    m = _PERCENT_POINT.match(v)
+    if m:
+        try:
+            return float(m.group(1).replace(",", "")), "%p", None
+        except ValueError:
+            return None, key_unit, None
+
+    # 세모 부호·주석 표시를 떼고 다시 본다 (서식공시에도 적용된다)
+    stripped, negative = _strip_accounting_marks(v)
+    if stripped != v:
+        num, unit, date = parse_value(stripped, key_unit=key_unit, unit_value=unit_value)
+        if num is not None:
+            return (-num if negative else num), unit, date
+        if date is not None:
+            return None, unit, date
+        v = stripped
+
+    compound = _parse_compound_amount(v)
+    if compound is not None:
+        return compound, key_unit or "원", None
 
     # DART 가 이미 정규화해 준 값이 있으면 날짜 판정에 먼저 쓴다 (AUNITVALUE)
     for cand in (unit_value, v):

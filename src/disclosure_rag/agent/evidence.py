@@ -7,9 +7,13 @@
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
+from pathlib import Path
 from dataclasses import dataclass, field
 
 from disclosure_rag.agent.agent_loop import AgentTrace
+from disclosure_rag.common.korean_number import describe_amount, normalize_unit_text
 
 _CALC_TOOL_NAMES = {"calculate_growth_rate", "calculate_ratio", "calculate_cagr"}
 
@@ -103,6 +107,109 @@ def build_evidence_pack(trace: AgentTrace) -> EvidencePack:
 _THIRD_PARTY_SECTIONS = ("주주에 관한 사항", "타법인출자", "타법인 출자", "계열회사")
 
 
+# 회사별 "제N기 -> 연도" 오프셋. scripts/build_fiscal_offsets.py 가 만든다.
+# 청크마다 최대 기수를 당기로 추측하면 일치율이 75.8% 밖에 안 된다(21개사 전수).
+# 회사별 최빈값으로 한 번 정해 두면 정확하다.
+_FISCAL_OFFSETS: dict[str, int] | None = None
+
+
+def _fiscal_offsets() -> dict[str, int]:
+    global _FISCAL_OFFSETS
+    if _FISCAL_OFFSETS is None:
+        table: dict[str, int] = {}
+        path = Path(__file__).resolve().parents[3] / "config" / "fiscal_offsets.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            for company, info in (data.get("companies") or {}).items():
+                table[company] = int(info["offset"])
+        except Exception:  # noqa: BLE001  파일이 없어도 동작해야 한다
+            table = {}
+        _FISCAL_OFFSETS = table
+    return _FISCAL_OFFSETS
+
+
+_GI_RE = re.compile(r"제\s?(\d{1,3})\s?기")
+
+
+def period_note(company: str | None, period: str | None,
+                filing_date: str | None, text: str | None) -> str:
+    """기간 표기를 실제 연도로 풀어 준다.
+
+    공시 표는 연도 대신 `당기/전기` 나 `제55기` 로 적는다. 실측(2026-09-01):
+    당기·전기 표기 35,300건, 기수 표기 16,711건. 질문은 연도로 묻는데 근거는
+    저렇게 적혀 있으면 모델이 연결을 못 짓는다.
+
+    기수 환산은 **회사별 오프셋을 아는 경우에만** 한다. 모르면 아무 말도
+    하지 않는다 — 틀린 환산을 근거에 박으면 모델이 그걸 믿는다.
+    """
+    base = (period or "")[:4] or (filing_date or "")[:4]
+    if not base.isdigit():
+        return ""
+    year = int(base)
+    parts = [f"당기 = {year}년, 전기 = {year - 1}년"]
+
+    offset = _fiscal_offsets().get(company or "")
+    if offset is not None and text and _GI_RE.search(text):
+        current = year + offset          # offset 은 음수: 기수 = 연도 + offset
+        if 1 <= current <= 200:
+            parts.append(
+                f"제{current}기 = {year}년, 제{current - 1}기 = {year - 1}년")
+    return "보고 기준: " + " / ".join(parts) + "\n"
+
+
+# 재무제표는 두 벌이다. 같은 항목이 서로 다른 값으로 실린다.
+#   연결재무제표  자회사까지 합친 것
+#   별도재무제표  그 회사 하나만
+# 실측(2026-09-01): 연결 352,161행 / 별도 321,650행 / 재무제표 절이 아닌 것 396,675행.
+#
+# "연결" 만 보고 판정하면 안 된다 —
+#   `XII. 상세표 > 1. 연결대상 종속회사 현황(상세)`  종속회사 목록이지 재무제표가 아니다
+#   `연결 내부회계관리제도 감사 또는 검토의견`         재무수치가 아니다
+# 반대로 공백이 섞인 `(첨부)연 결 재 무 제 표` 는 반드시 잡아야 한다(22,162행).
+_STATEMENT_SPACES = re.compile(r"[\s ​　]")
+
+
+def statement_kind(section_path) -> str:
+    """이 근거가 연결재무제표인가 별도재무제표인가. 재무제표 절이 아니면 빈 문자열.
+
+    판정 순서
+      1. 유니코드 정규화(NFC) — 한글이 두 방식으로 저장될 수 있다
+      2. 공백류 전부 제거 — 일반 공백, 전각 공백, 무너비 공백까지
+      3. "연결재무제표" 포함이면 연결
+      4. 아니고 "재무제표" 포함이면 별도
+      5. 둘 다 없으면 빈 문자열 -> **줄을 안 붙인다**
+
+    5번이 중요하다. 「주주에 관한 사항」에 "별도재무제표" 를 붙이면 모델이
+    최대주주 수치를 그 회사 재무제표 값으로 읽는다 — 오늘 고친 게 도로 망가진다.
+    """
+    joined = unicodedata.normalize("NFC", " > ".join(str(p) for p in (section_path or [])))
+    flat = _STATEMENT_SPACES.sub("", joined)
+    if "연결재무제표" in flat:
+        return "연결재무제표"
+    if "재무제표" in flat:
+        return "별도재무제표"
+    return ""
+
+
+def statement_note(section_path) -> str:
+    kind = statement_kind(section_path)
+    return f"재무제표 구분: {kind}\n" if kind else ""
+
+
+def unit_note(unit_hint: str | None) -> str:
+    """이 표의 금액 단위를 한 줄로 알려준다.
+
+    공시 표는 숫자만 적고 단위는 표 머리의 별도 줄에 둔다. 그 줄을 안 주면
+    같은 3,112,850 이 백만원 표에서는 3조, 천원 표에서는 31억이 된다
+    (1,000배). 실측(2026-09-01): 크래프톤 영업비용이 정답 3,112,850(백만원)
+    대신 다른 표의 255,698,325천원 으로 나갔다.
+    """
+    unit = normalize_unit_text(unit_hint)
+    if not unit:
+        return ""
+    return f"표 단위: {unit} (이 표의 숫자는 {unit} 단위입니다)\n"
+
+
 def _fact_owner(row: dict) -> str:
     """이 수치의 주인 이름. 회사 자신이 아니면 그렇게 적는다."""
     owner = row.get("value_owner")
@@ -131,7 +238,8 @@ def third_party_note(section_path, owner: str | None = None, company: str | None
 
 def _evidence_block(idx: int, *, company, report_name, filing_date, period,
                     section_path, is_correction, is_latest, text,
-                    report_id, chunk_id, owner: str | None = None) -> str:
+                    report_id, chunk_id, owner: str | None = None,
+                    unit_hint: str | None = None) -> str:
     status = "정정본" if is_correction else "원본"
     if is_latest:
         status += " (최신)"
@@ -143,6 +251,9 @@ def _evidence_block(idx: int, *, company, report_name, filing_date, period,
         f"기간: {period}\n"
         f"Section: {' > '.join(section_path or [])}\n"
         f"정정 상태: {status}\n"
+        f"{period_note(company, period, filing_date, text)}"
+        f"{statement_note(section_path)}"
+        f"{unit_note(unit_hint)}"
         f"{third_party_note(section_path, owner, company)}"
         f"내용:\n{text}\n"
         f"report_id: {report_id}\n"
@@ -248,6 +359,14 @@ def _mark_winner(by_item: dict[str, list[tuple[str, dict]]], aggregation: str) -
             f"▶▶ {item} 비교 결과: {top_company}가 더 {word}"
             f" ({_fact_value(top_row)} vs {_fact_value(second_row)}, 차이 {gap:,.0f})"
         )
+        # 자릿수가 크면 사람이 읽는 단위로도 적어 준다. 환산도 파이썬이 한다.
+        readable = [
+            f"{company} {describe_amount(row['value_num'], row.get('value_unit') or '원')}"
+            for company, row in ranked[:3]
+            if describe_amount(row["value_num"], row.get("value_unit") or "원")
+        ]
+        if readable and abs(top_row["value_num"]) >= 100_000_000:
+            out.append("▶▶ 단위 환산: " + " / ".join(readable))
         if len(ranked) > 2:
             order = " > ".join(c for c, _r in ranked)
             out.append(f"▶▶ {item} 순위: {order}")
@@ -296,6 +415,7 @@ def build_evidence_pack_from_retrieval(
             report_id=getattr(chunk, "report_id", None),
             chunk_id=getattr(chunk, "chunk_id", None),
             owner=(chunk_owners or {}).get(getattr(chunk, "chunk_id", None)),
+            unit_hint=getattr(chunk, "unit_hint", None),
         )
         if max_chars is not None and used + len(block) > max_chars and citations:
             truncated = len(chunks_with_scores) - idx + 1
