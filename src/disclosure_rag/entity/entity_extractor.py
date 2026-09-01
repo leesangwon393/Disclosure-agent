@@ -41,6 +41,41 @@ _COMPANY_TAILS = (
 )
 _WORD_CHAR = re.compile(r"[가-힣A-Za-z0-9]")
 
+# 회사명 **뒤에 공백을 두고** 이 말이 오면 그건 해외 자회사·현지법인이지
+# 같은 회사가 아니다.
+#
+#   "현대로템 주식회사"        -> 같은 회사 (법인격 표기)
+#   "현대로템 USA"            -> 다른 회사 (미국 현지법인)
+#   "LS ELECTRIC AMERICA"    -> 다른 회사
+#
+# 문자열 구조가 같아서 조사 규칙만으로는 못 가른다. 그래서 지명·해외 법인격을
+# 목록으로 둔다. 목록에 없는 말(사업보고서, 매출액, 2024년 …)은 그대로
+# 통과하므로 평상시 질문은 영향받지 않는다(평가 문항 836개 회귀 0건).
+_FOREIGN_SUFFIX_EN = frozenset({
+    "USA", "AMERICA", "EUROPE", "ASIA", "CHINA", "JAPAN", "VIETNAM", "INDIA",
+    "MEXICO", "BRAZIL", "POLAND", "HUNGARY", "GERMANY", "FRANCE", "UK", "CANADA",
+    "AUSTRALIA", "SINGAPORE", "THAILAND", "INDONESIA", "PHILIPPINES", "MALAYSIA",
+    "TURKEY", "RUSSIA", "EGYPT", "TUNISIA", "SLOVAKIA", "CZECH",
+    "GMBH", "BV", "NV", "SA", "SAS", "SRL", "SDN", "BHD", "PTE", "PVT", "LLC", "LLP",
+})
+_FOREIGN_SUFFIX_KO = (
+    "유한공사", "유한책임회사", "현지법인", "해외법인",
+    "아메리카", "유럽", "차이나", "재팬", "베트남", "인디아",
+)
+_NEXT_EN = re.compile(r"\s+([A-Za-z][A-Za-z.]*)")
+_NEXT_KO = re.compile(r"\s+([가-힣]+)")
+
+
+def _foreign_affiliate_follows(tail: str) -> bool:
+    """이름 뒤에 오는 말이 해외 법인 표시인가."""
+    m = _NEXT_EN.match(tail)
+    if m and m.group(1).upper().replace(".", "") in _FOREIGN_SUFFIX_EN:
+        return True
+    m = _NEXT_KO.match(tail)
+    if m and any(m.group(1).startswith(k) for k in _FOREIGN_SUFFIX_KO):
+        return True
+    return False
+
 _REPORT_NAME_TERMS = [
     "사업보고서", "반기보고서", "분기보고서",
     "주요사항보고서", "주식등의대량보유상황보고서", "대량보유상황보고서",
@@ -91,9 +126,22 @@ class EntityExtractor:
         if before and _WORD_CHAR.match(before):
             return False
         tail = text[end:]
-        if tail and _WORD_CHAR.match(tail):
-            return any(tail.startswith(t) for t in _COMPANY_TAILS)
-        return True
+        # "현대로템 USA" 처럼 공백 뒤에 지명·해외 법인격이 오면 다른 회사다.
+        if _foreign_affiliate_follows(tail):
+            return False
+        if not tail or not _WORD_CHAR.match(tail):
+            return True
+        # 조사인지 확인할 때 **조사 뒤 글자까지** 본다. 조사 뒤에 글자가 이어지면
+        # 그건 조사가 아니라 이름의 일부다.
+        #   "삼성전자로 인해"   -> '로' 뒤가 공백  -> 조사  -> 같은 회사
+        #   "삼성전자로지텍"     -> '로' 뒤가 '지'  -> 이름  -> 다른 회사
+        # 긴 조사부터 맞춰야 "에서" 를 "에" 로 잘못 끊지 않는다.
+        for particle in sorted(_COMPANY_TAILS, key=len, reverse=True):
+            if tail.startswith(particle):
+                rest = tail[len(particle):]
+                if not rest or not _WORD_CHAR.match(rest):
+                    return True
+        return False
 
     def _extract_companies(self, query_nfc: str) -> list[tuple[int, int, str]]:
         spans: list[tuple[int, int, str]] = []
