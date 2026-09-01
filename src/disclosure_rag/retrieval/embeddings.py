@@ -6,6 +6,7 @@ HCX Embedding 과 Recall@K 비교가 가능하게 한다 (§74 평가 가능 모
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from typing import Protocol
 
 from disclosure_rag.common.device import pick_device, use_fp16_for
@@ -189,3 +190,60 @@ class BgeM3MultiProvider:
 
     def embed_query(self, text: str) -> list[float]:
         return self.embed([text])[0]
+
+
+class SharedQueryEncoder:
+    """질의 인코딩을 dense/sparse 가 **한 forward pass 로 나눠 쓰게** 한다.
+
+    왜 필요한가
+    -----------
+    dense 검색기는 `embed_query()` 로 BGE-M3 를 한 번 돌리고, sparse 검색기는
+    같은 질의로 lexical weights 를 받으려고 **또 한 번** 돌린다. 두 출력은
+    같은 forward pass 의 서로 다른 헤드라서 원래 한 번이면 된다. 질의마다
+    모델을 두 번 태우던 것을 한 번으로 줄인다 — 점수는 한 글자도 안 바뀐다
+    (같은 모델, 같은 입력, 같은 출력).
+
+    재검색(nudge)이나 하위 질의가 같은 문장을 다시 물을 때를 대비해 최근
+    질의를 조금 캐시한다. 캐시는 프로세스 안에서만 살고 인덱스와 무관하다.
+
+    max_length 를 넘기지 않는 이유: 원래 두 경로 모두 `encode_all` 기본값을
+    썼다. 여기서 다른 값을 주면 '결과가 같다'는 보장이 깨진다.
+    """
+
+    def __init__(self, provider, *, cache_size: int = 128):
+        self._provider = provider
+        self._cache: "OrderedDict[str, tuple[list[float], dict[str, float]]]" = OrderedDict()
+        self._cache_size = max(1, int(cache_size))
+        self.hits = 0
+        self.misses = 0
+
+    # 원 provider 의 나머지 속성(name, dim, encode_all ...)은 그대로 통한다.
+    def __getattr__(self, item):
+        return getattr(self._provider, item)
+
+    def _encode(self, text: str) -> tuple[list[float], dict[str, float]]:
+        cached = self._cache.get(text)
+        if cached is not None:
+            self._cache.move_to_end(text)
+            self.hits += 1
+            return cached
+        self.misses += 1
+        out = self._provider.encode_all(
+            [text], batch_size=1, dense=True, sparse=True, colbert=False,
+        )
+        dense = [float(x) for x in out["dense_vecs"][0]]
+        lexical = {str(k): float(v) for k, v in out["lexical_weights"][0].items()}
+        self._cache[text] = (dense, lexical)
+        while len(self._cache) > self._cache_size:
+            self._cache.popitem(last=False)
+        return dense, lexical
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._encode(text)[0]
+
+    def lexical_query(self, text: str) -> dict[str, float]:
+        return self._encode(text)[1]
+
+    def embed(self, texts: list[str], *, batch_size: int = 32) -> list[list[float]]:
+        """여러 건은 캐시하지 않는다 — 코퍼스 임베딩까지 들고 있으면 안 된다."""
+        return self._provider.embed(texts, batch_size=batch_size)

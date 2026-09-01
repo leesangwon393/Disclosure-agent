@@ -119,10 +119,15 @@ def _load_sparse(emb_dir: Path, chunks: list[ChunkSchema], provider):
     if not shards:
         return None
 
-    def encode_query(text: str) -> dict:
-        out = provider.encode_all([text], batch_size=1, dense=False, sparse=True, colbert=False)
-        w = out["lexical_weights"][0]
-        return {str(k): float(v) for k, v in w.items()}
+    # provider 가 SharedQueryEncoder 면 dense 와 forward pass 를 나눠 쓴다.
+    # 아니면 예전처럼 sparse 만 따로 뽑는다.
+    encode_query = getattr(provider, "lexical_query", None)
+    if encode_query is None:
+        def encode_query(text: str) -> dict:   # noqa: F811
+            out = provider.encode_all([text], batch_size=1, dense=False,
+                                      sparse=True, colbert=False)
+            w = out["lexical_weights"][0]
+            return {str(k): float(v) for k, v in w.items()}
 
     return SparseRetriever.from_shards(chunks, shards, encode_query)
 
@@ -161,8 +166,12 @@ def load_bundle(
     if (use_dense or use_sparse) and emb.exists():
         provider = None
         try:
-            from disclosure_rag.retrieval.embeddings import BgeM3MultiProvider
-            provider = BgeM3MultiProvider()
+            from disclosure_rag.retrieval.embeddings import (
+                BgeM3MultiProvider, SharedQueryEncoder,
+            )
+            # 질의 인코딩을 dense/sparse 가 한 번에 나눠 쓰게 감싼다.
+            # 검색 점수는 그대로고 질의당 모델 호출만 2회 -> 1회가 된다.
+            provider = SharedQueryEncoder(BgeM3MultiProvider())
         except Exception as e:  # noqa: BLE001
             logger.warning("[INDEX] BGE-M3 로드 실패(%s) — BM25 단독으로 진행", type(e).__name__)
         if provider is not None:
@@ -189,10 +198,19 @@ def load_bundle(
         from disclosure_rag.facts.multi_store import MultiFactStore
 
         candidates = [root / "facts" / "facts.sqlite"]
-        for name in ("facts_periodic_v2", "facts_periodic"):
+        # 정기공시 수치사전은 여러 판이 남아 있다. **최신 판을 먼저** 본다.
+        # v4 = 제3자(최대주주 등) 수치에 주인 이름을 붙인 판(2026-09-01).
+        # FACTS_PERIODIC 환경변수로 특정 판을 지목할 수 있다(A/B 비교용).
+        import os
+        forced = os.environ.get("FACTS_PERIODIC", "").strip()
+        names = ([forced] if forced else
+                 ["facts_periodic_v4", "facts_periodic_v3",
+                  "facts_periodic_v2", "facts_periodic"])
+        for name in names:
             path = root / name / "facts.sqlite"
             if path.exists():
                 candidates.append(path)
+                logger.info("[INDEX] 정기공시 수치사전: %s", name)
                 break
         fact_store = MultiFactStore.from_paths(candidates)
         if fact_store is not None:

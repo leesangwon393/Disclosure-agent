@@ -179,6 +179,7 @@ class DualChannelRetriever:
                             company=company, key=key, doc_group=doc_group,
                             period=period, latest_only=latest_only,
                             corrections_only=bool(getattr(plan, "corrections_only", False)),
+                            value_owner=getattr(plan, "value_owner", "self"),
                             order_by=order_by, limit=per_field,
                         )
                         for row in found:
@@ -194,8 +195,24 @@ class DualChannelRetriever:
 
         # latest_only는 SQL에서도 적용하지만 first_and_final/all_versions는
         # 정정 체인을 실제 정책대로 정리해야 한다. 점수나 재정렬은 생기지 않는다.
-        kept, _report = deduplicate_versions(rows, plan.latest_policy)
+        kept, _report = deduplicate_versions(rows, plan.latest_policy,
+                                             periods=plan.periods)
         return kept
+
+    @property
+    def chunk_owners(self) -> dict:
+        """조각 번호 -> 그 표의 수치 주인.
+
+        수치사전이 표에서 확인해 둔 것을 비정형 근거에도 그대로 쓴다. 같은
+        조각을 가리키므로 다시 계산할 필요가 없고, 재임베딩도 필요 없다.
+        """
+        store = self.fact_store
+        if store is None:
+            return {}
+        try:
+            return store.owner_by_chunk
+        except Exception:  # noqa: BLE001
+            return {}
 
     def _correction_rows(self, plan: QueryPlan) -> list[dict]:
         if not self.correction_index or not self.manifest or not plan.companies:
@@ -224,6 +241,10 @@ class DualChannelRetriever:
                 continue
             if plan.latest_policy == "latest_only":
                 keep = record.is_latest
+            elif plan.latest_policy == "latest_in_window":
+                # 기간으로 이미 걸렀으므로 그 안의 것은 다 남긴다.
+                # 어느 판을 쓸지는 version_dedup 이 정한다.
+                keep = True
             elif plan.latest_policy == "first_and_final":
                 keep = record.correction_order == 0 or record.is_latest
             else:
@@ -259,16 +280,18 @@ class DualChannelRetriever:
                     rerank_top_n=rerank_top_n,
                 )
                 deduped, dedup_report = deduplicate_scored(
-                    trace.results, plan.latest_policy,
+                    trace.results, plan.latest_policy, periods=plan.periods,
                 )
                 return deduped, {
                     "channel_counts": trace.channel_counts,
                     "fused_count": trace.fused_count,
                     "reranked": trace.reranked,
+                    "search_ms": dict(getattr(trace, "timings_ms", {}) or {}),
                     "version_dedup": asdict(dedup_report),
                 }
             raw = self.unstructured.search(query, k=top_k, flt=retrieval_filter)
-            deduped, dedup_report = deduplicate_scored(raw, plan.latest_policy)
+            deduped, dedup_report = deduplicate_scored(raw, plan.latest_policy,
+                                                       periods=plan.periods)
             return deduped, {"version_dedup": asdict(dedup_report)}
 
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="unstructured-retrieval") as pool:
@@ -324,10 +347,13 @@ class DualChannelRetriever:
             "unstructured_error": unstructured_error, "facts_error": facts_error,
             "facts_order_by": self._ORDER_BY.get(getattr(plan, "aggregation", "none"), "date"),
         }
+        search_ms = diagnostics.get("search_ms") or {}
+        breakdown = " ".join(f"{name}={value:.0f}ms" for name, value in search_ms.items())
         logger.info(
             "[DUAL] facts_executed=%s structured_fields=%s fact_rows=%d "
-            "unstructured=%d reports=%d elapsed_ms=%.1f",
-            bool(fields), fields, len(facts), len(unstructured_results), len(report_order), elapsed_ms,
+            "unstructured=%d reports=%d facts_ms=%.1f elapsed_ms=%.1f%s",
+            bool(fields), fields, len(facts), len(unstructured_results), len(report_order),
+            facts_ms, elapsed_ms, f" | {breakdown}" if breakdown else "",
         )
         return DualChannelResult(
             query=query, unstructured_results=unstructured_results, facts=facts,

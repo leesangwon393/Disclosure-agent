@@ -16,7 +16,37 @@ mkdir -p artifacts/logs
 BG=0
 if [ "${1:-}" = "-bg" ]; then BG=1; shift; fi
 
-NAME=$(basename -- "${2:-run}" .py 2>/dev/null || echo run)
+# `python3` 를 프로젝트 가상환경으로 바꿔치기한다.
+#
+# 2026-09-01 실패: `.venv` 를 activate 하지 않은 셸에서 run_tonight.sh 를 돌리자
+# 시스템 python3.14 가 잡혀 "No module named pytest" 로 즉시 죽었다. 의존성은
+# 전부 .venv(python3.11)에만 있다. activate 를 잊는 건 사람 잘못이 아니라
+# 스크립트가 챙길 일이다.
+case "${1:-}" in
+  python3|python)
+    if [ -x ".venv/bin/python3" ]; then
+      shift; set -- ".venv/bin/python3" "$@"
+    elif [ -d ".venv" ]; then
+      echo "⚠️  .venv 는 있는데 .venv/bin/python3 을 못 쓴다 — 시스템 파이썬으로 돌린다." >&2
+      echo "    의존성이 .venv 에만 있으면 곧바로 ModuleNotFoundError 로 죽는다." >&2
+    fi
+    ;;
+esac
+
+# 로그 이름은 실행하는 .py 파일에서 딴다. `-m pytest` 처럼 모듈 실행이면
+# 모듈 이름을 쓴다 — 예전엔 전부 `_-m.log` 로 뭉뚱그려졌다.
+NAME=run
+for arg in "$@"; do
+  case "$arg" in
+    *.py) NAME=$(basename -- "$arg" .py); break ;;
+  esac
+done
+if [ "$NAME" = "run" ]; then
+  case " $* " in
+    *" -m "*) NAME=$(echo "$*" | sed -n 's/.* -m \([A-Za-z0-9_.]*\).*/\1/p') ;;
+  esac
+  [ -z "$NAME" ] && NAME=run
+fi
 TS=$(date +%Y%m%d_%H%M%S)
 LOG="artifacts/logs/${TS}_${NAME}.log"
 

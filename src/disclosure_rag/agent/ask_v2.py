@@ -34,6 +34,7 @@ HCX 호출 지점이 셋뿐이고, 앞의 둘은 거의 안 탄다:
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -83,6 +84,9 @@ class AskV2Result:
     thinking: dict | None = None      # 이 질문에 실제로 쓴 설정 (A/B 추적용)
     stopped_at: str = "answered"      # 어느 단계에서 끝났는지 — 진단용
     notes: list[str] = field(default_factory=list)
+    # 단계별 누적 소요 시간(ms). 어디가 느린지 추정하지 말고 재기 위한 값이다.
+    # 키: bm25 / dense / sparse / fusion / rerank / facts / expand / process / hcx / total
+    timing_ms: dict[str, float] = field(default_factory=dict)
 
     @property
     def citations(self) -> list:
@@ -117,7 +121,27 @@ class AskV2:
     # ------------------------------------------------------------------
 
     def run(self, question: str) -> AskV2Result:
+        """`_run` 을 감싸서 전체 소요 시간을 남긴다.
+
+        조기 종료 경로가 다섯 갈래라 return 마다 총시간을 적으면 하나를
+        빠뜨린다. 감싸면 어느 경로로 끝나든 `timing_ms['total']` 이 찍힌다.
+        """
+        started = time.perf_counter()
+        try:
+            return self._run(question)
+        finally:
+            total = round((time.perf_counter() - started) * 1000, 2)
+            bucket = getattr(self, "_timing", None)
+            if bucket is not None:
+                bucket["total"] = total
+                measured = sum(v for k, v in bucket.items()
+                               if k not in ("total", "searches"))
+                bucket["other"] = round(max(total - measured, 0.0), 2)
+            logger.info("[ASKv2] 소요 %.0fms %s", total, bucket)
+
+    def _run(self, question: str) -> AskV2Result:
         out = AskV2Result(question=question, answer="")
+        self._timing = out.timing_ms
         # 질문마다 초기화한다. 조기 종료(범위·거부 게이트)하면 `_facts_of` 가
         # 안 불려서, 이걸 안 비우면 **앞 질문의 Facts 가 다음 질문에 섞인다.**
         self._last_facts = []
@@ -139,7 +163,10 @@ class AskV2:
         # 남지 않았다(2026-08-31 발견).
         if self.registry is None:
             out.notes.append("범위 게이트: 회사명 목록 없음 — 코퍼스 밖 회사를 걸러내지 못한다")
-        out.scope = apply_scope_gate(plan, question, self.registry)
+        # 계획 보완(2b)이 뒤에 남아 있으면 answer_mode/task 빈칸으로는 되묻지
+        # 않는다. 그건 사용자가 아니라 우리가 채울 칸이다.
+        out.scope = apply_scope_gate(plan, question, self.registry,
+                                     can_fill_blanks=self.client is not None)
         if out.scope is not None:
             if out.scope.should_refuse:
                 out.stopped_at = "scope_gate"
@@ -174,10 +201,21 @@ class AskV2:
         # 나간 호출이 대부분이었다). 회사 추출은 규칙이 하므로 순서를 바꿔도
         # 게이트 판단은 달라지지 않는다.
         if not plan.is_complete and self.client is not None:
+            _t = time.perf_counter()
             plan = fill_missing_with_hcx(plan, question, self.client)
+            self._add_timing("hcx", (time.perf_counter() - _t) * 1000)
             out.plan = plan
             if plan.source.get("answer_mode") == "hcx" or plan.source.get("task") == "hcx":
                 out.hcx_calls += 1
+            # 보완하고도 빈칸이면 그때는 사람에게 물어야 한다. 여기까지 왔는데
+            # 무엇을 묻는지 모르면 검색해봐야 근거를 고를 기준이 없다.
+            if plan.answer_mode == "unknown" and plan.task == "unknown":
+                late = apply_scope_gate(plan, question, self.registry)
+                if late.needs_clarification and late.clarification_message:
+                    out.scope = late
+                    out.stopped_at = "clarify_gate"
+                    out.answer = late.clarification_message
+                    return out
 
         # --- 3.5. 존재 전수 확인 ------------------------------------------
         # 검색은 상위 k건만 본다. 거기 없다고 '없다'고 말할 수는 없어서 모델이
@@ -202,12 +240,19 @@ class AskV2:
             out.retries = attempt
             decomposed = decompose_and_search(
                 plan, f"{question} {hint}".strip() if hint else question, self._search)
+            _t = time.perf_counter()
             merged = self._expand_parents(decomposed.merged)
+            self._add_timing("expand", (time.perf_counter() - _t) * 1000)
+            _t = time.perf_counter()
             processed = process_evidence(plan, merged)
+            self._add_timing("process", (time.perf_counter() - _t) * 1000)
             report = check_sufficiency(plan, processed, decompose_result=decomposed,
                                        nudges_used=attempt,
                                        max_nudges=self.max_nudges)
             out.decomposed, out.processed, out.sufficiency = decomposed, processed, report
+            for note in getattr(decomposed, "notes", ()) or ():
+                if note not in out.notes:
+                    out.notes.append(note)
             out.evidence = merged
             if report.ok or not report.should_retry:
                 break
@@ -241,11 +286,15 @@ class AskV2:
             aggregation=getattr(plan, "aggregation", "none"),
             max_chars=self.max_evidence_chars,
             scope_note=out.existence.prompt_block(),
+            chunk_owners=getattr(self.dual, "chunk_owners", None),
+            compare_winner=bool(getattr(plan, "compare_winner", False)),
         )
 
         # --- 14. 답변 생성 ------------------------------------------------
+        _t = time.perf_counter()
         answer = generate_answer(self.client, out.evidence_pack, plan=plan,
                                  thinking_policy=self.thinking_policy)
+        self._add_timing("hcx", (time.perf_counter() - _t) * 1000)
         out.hcx_calls += 1
         from disclosure_rag.agent.answer_generator import resolve_thinking
         out.thinking = resolve_thinking(plan, policy=self.thinking_policy)
@@ -266,8 +315,21 @@ class AskV2:
 
     # ------------------------------------------------------------------ 내부
 
+    def _add_timing(self, name: str, ms: float) -> None:
+        bucket = getattr(self, "_timing", None)
+        if bucket is None:
+            return
+        bucket[name] = round(bucket.get(name, 0.0) + float(ms), 2)
+
     def _search(self, text: str, sub_plan: QueryPlan, k: int):
         result = self.dual.search(text, sub_plan, k=k)
+        diag = getattr(result, "diagnostics", None) or {}
+        for name, ms in (diag.get("search_ms") or {}).items():
+            if name != "total":
+                self._add_timing(name, ms)
+        if diag.get("facts_ms") is not None:
+            self._add_timing("facts", diag["facts_ms"])
+        self._add_timing("searches", 1)
         # 이 하위 질의의 Facts 를 결과에 붙여 둔다(병합 뒤에 모아 쓴다).
         self._last_facts = getattr(self, "_last_facts", [])
         self._last_facts.extend(result.facts)

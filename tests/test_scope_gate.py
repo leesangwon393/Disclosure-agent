@@ -1,3 +1,5 @@
+import pytest
+
 from disclosure_rag.agent.query_plan import QueryPlan
 from disclosure_rag.agent.scope_gate import apply_scope_gate, evaluate_scope
 
@@ -106,3 +108,113 @@ def test_question_without_a_named_subject_is_not_flagged():
     for q in ("그 회사 계약금액은 얼마야?", "작년 실적이 어떻게 됐어?",
               "매출액은 얼마야?", "계약이 바뀌었어?", "두 회사를 비교해줘."):
         assert unknown_subject(q, _REG) is None, q
+
+
+# --------------------------------------------------------------------------- 역질문 오탐 (2026-08-31)
+
+def test_short_but_clear_question_is_not_asked_back(registry_fixture_or_none=None):
+    """"삼성전자의 2024년 매출액은?" 같은 문장으로 되물으면 안 된다.
+
+    규칙만으로는 answer_mode/task 가 unknown 이지만, 그 빈칸은 계획 보완(2b)이
+    채운다. 되물을 일이 아니다. ("...얼마인가?" 로 끝나면 규칙이 채우고
+    "...은?" 으로 끝나면 못 채웠다 — 문장 끝 표현 하나로 답을 안 주던 버그.)
+    """
+    from disclosure_rag.agent.query_plan import QueryPlan
+    from disclosure_rag.agent.scope_gate import evaluate_scope
+
+    plan = QueryPlan(companies=["삼성전자"], periods=["2024-12"])   # mode/task 미정
+    registry = _NamedRegistry({"삼성전자": ["corp"]})
+
+    filled = evaluate_scope(plan, "삼성전자의 2024년 매출액은?", registry,
+                            can_fill_blanks=True)
+    assert not filled.needs_clarification
+
+    # 보완이 불가능한 상황(클라이언트 없음)에서는 예전대로 되묻는다
+    unfilled = evaluate_scope(plan, "삼성전자의 2024년 매출액은?", registry)
+    assert unfilled.needs_clarification
+
+
+def test_missing_company_still_asks_back_even_when_blanks_are_fillable():
+    """회사명이 없는 건 HCX 가 채워줄 수 있는 빈칸이 아니다."""
+    from disclosure_rag.agent.query_plan import QueryPlan
+    from disclosure_rag.agent.scope_gate import evaluate_scope
+
+    plan = QueryPlan(companies=[], answer_mode="closed", task="lookup")
+    decision = evaluate_scope(plan, "그것의 매출액은?", _NamedRegistry({}),
+                              can_fill_blanks=True)
+    assert decision.needs_clarification
+
+
+# ------------------------------------------------------------ 되묻기 게이트 (A-10)
+#
+# "KB금융지주는 얼마인가" 처럼 회사 이름만 있고 **무엇을** 묻는지가 없는
+# 질문에 넘겨짚어 답하면 실서비스에서 위험하다. 되묻는다.
+
+def _plan_named(company="KB금융지주", **kw):
+    from disclosure_rag.agent.query_plan import QueryPlan
+    kw.setdefault("answer_mode", "closed")
+    kw.setdefault("task", "lookup")
+    return QueryPlan(companies=[company], **kw)
+
+
+def test_a_company_name_with_no_item_asks_back():
+    from disclosure_rag.agent.scope_gate import _clarification_reason
+    reason = _clarification_reason(_plan_named(), "KB금융지주는 얼마인가?")
+    assert reason and "무엇을 묻는지" in reason
+
+
+def test_a_named_item_proceeds():
+    from disclosure_rag.agent.scope_gate import _clarification_reason
+    plan = _plan_named("삼성전자", expected_fields=["매출액"])
+    assert _clarification_reason(plan, "삼성전자의 2024년 매출액은?") is None
+
+
+def test_an_item_outside_the_field_dictionary_still_proceeds():
+    """항목 사전에 없는 말이라도 **무언가를 묻고 있으면** 되묻지 않는다."""
+    from disclosure_rag.agent.scope_gate import _clarification_reason
+    plan = _plan_named("삼성전자")
+    assert _clarification_reason(plan, "삼성전자의 리튬 사업 진행 상황은?") is None
+
+
+def test_the_alias_written_in_the_question_is_removed_too():
+    """정식명만 지우면 질문에 쓰인 표기가 남아 '항목이 있다'고 오판한다."""
+    from disclosure_rag.agent.scope_gate import _clarification_reason
+    plan = _plan_named("삼성에스디아이",
+                       company_mentions={"삼성에스디아이": ["삼성SDI"]})
+    reason = _clarification_reason(plan, "삼성SDI는 얼마야?")
+    assert reason and "무엇을 묻는지" in reason
+
+
+def test_no_company_still_asks_for_a_company_first():
+    from disclosure_rag.agent.query_plan import QueryPlan
+    from disclosure_rag.agent.scope_gate import _clarification_reason
+    reason = _clarification_reason(QueryPlan(answer_mode="closed", task="lookup"),
+                                   "얼마인가?")
+    assert reason == "회사명이 필요합니다."
+
+
+# ------------------------------------------------- 되묻기 게이트 존댓말 (2026-09-01)
+#
+# `_ASK_WORDS` 에 `얼마인가` 는 있는데 `얼마인가요` 가 없어, 존댓말로 물으면
+# 규칙이 통째로 비활성화됐다.
+
+@pytest.mark.parametrize("query", [
+    "KB금융은 얼마인가?",
+    "KB금융은 얼마인가요?",
+    "삼성전자는 어떤가요?",
+    "삼성전자는 얼마나 되나요?",
+    "삼성전자 좀 알려주세요",
+])
+def test_the_polite_forms_also_reach_the_clarification_gate(query):
+    from disclosure_rag.agent.scope_gate import _clarification_reason
+    company = "KB금융" if "KB금융" in query else "삼성전자"
+    plan = QueryPlan(companies=[company], answer_mode="closed", task="lookup")
+    reason = _clarification_reason(plan, query)
+    assert reason and "무엇을 묻는지" in reason
+
+
+def test_a_real_item_name_is_never_mistaken_for_a_company():
+    """`매출액은 얼마야?` 의 `매출액` 을 회사 이름으로 잡으면 안 된다.
+    조사를 넓히려다 이걸 깨뜨려 되돌렸다(2026-09-01)."""
+    from disclosure_rag.agent.scope_gate import unknown_subject
+    assert unknown_subject("매출액은 얼마야?", _REG) is None

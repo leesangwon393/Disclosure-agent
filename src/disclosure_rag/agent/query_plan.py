@@ -69,8 +69,9 @@ TASKS: tuple[Task, ...] = (
 Aggregation = Literal["max", "min", "count", "none"]
 AGGREGATIONS: tuple[Aggregation, ...] = ("max", "min", "count", "none")
 
-LatestPolicy = Literal["latest_only", "first_and_final", "all_versions"]
-LATEST_POLICIES: tuple[LatestPolicy, ...] = ("latest_only", "first_and_final", "all_versions")
+LatestPolicy = Literal["latest_only", "latest_in_window", "first_and_final", "all_versions"]
+LATEST_POLICIES: tuple[LatestPolicy, ...] = (
+    "latest_only", "latest_in_window", "first_and_final", "all_versions")
 
 # 필드를 누가 채웠는가. plan_validator 가 HCX 가 채운 값만 골라 검증할 때 쓴다.
 FieldSource = Literal["rule", "hcx", "default"]
@@ -93,12 +94,30 @@ class QueryPlan:
 
     # --- 검색 대상 ----------------------------------------------------------
     companies: list[str] = field(default_factory=list)
+    # 정식 회사명 -> 질문에 실제로 쓰인 표기. 질문이 "삼성SDI" 라고 써도
+    # companies 에는 정식명("삼성에스디아이")이 들어간다. 하위 질의에서 다른
+    # 회사 이름을 지울 때 정식명만 지우면 **질문에 적힌 표기가 그대로 남아**
+    # 어휘 검색이 그 낱말을 점수에 쓴다(회사 귀속 오류의 원인).
+    company_mentions: dict[str, list[str]] = field(default_factory=dict)
     periods: list[str] = field(default_factory=list)
     report_types: list[str] = field(default_factory=list)   # doc_group
     report_kinds: list[str] = field(default_factory=list)   # field_schema 의 유형명
 
+    # --- 수치의 주인 --------------------------------------------------------
+    # 사업보고서에는 그 회사 수치만 실리는 게 아니다. 「주주에 관한 사항」에는
+    # 최대주주 법인의 재무현황이, 「타법인 출자현황」에는 출자한 회사의 수치가
+    # 실린다. 질문이 회사 자신을 묻는지 최대주주를 묻는지 갈라야 한다.
+    #   self  회사 자신 (기본)
+    #   other 최대주주·특수관계인 등 제3자
+    value_owner: str = "self"
+
     # --- 집계 --------------------------------------------------------------
     aggregation: Aggregation = "none"
+    # 질문이 "둘 중 어느 쪽이 더 큰가" 를 묻는가.
+    # 대소 비교는 **모델이 자주 틀린다** — 0이 13개 붙은 수를 눈으로 견준다.
+    # 실측(2026-09-01): 계산이 붙는 유형 96%, 모델에 맡긴 유형 50%.
+    # 이 값이 True 면 파이썬이 승자를 계산해 프롬프트에 못 박는다.
+    compare_winner: bool = False
 
     # --- 버전 처리 ----------------------------------------------------------
     latest_policy: LatestPolicy = "latest_only"
@@ -217,6 +236,27 @@ _OPEN_ENDINGS = (
     "어떻게 변화", "어떻게 달라", "무엇이 달라", "어떤 내용", "어떤 차이",
     "비교했을 때", "기준으로 주요",
 )
+
+
+_OWNER_OTHER_MARKERS = (
+    "최대주주", "최대 주주", "대주주", "특수관계인", "특수관계자",
+    "지배주주", "모회사", "지주회사의 주주",
+)
+
+
+def detect_value_owner(query: str) -> str:
+    """질문이 회사 자신을 묻는지, 최대주주 같은 제3자를 묻는지.
+
+    "KB금융의 자산총계는?"          -> self   (KB금융 것)
+    "KB금융 최대주주의 자산총계는?"  -> other  (국민연금공단 것)
+
+    같은 사업보고서 안에 두 값이 다 들어 있어서, 이걸 안 가르면 둘 중 하나는
+    반드시 틀린다. 실제로 갈리기 전에는 최대주주 값이 회사 값으로 나갔다
+    (2026-09-01: KB금융·신한지주·하나금융지주·POSCO홀딩스 자산총계가 전부
+    464,418 로 같았고, 넷 다 최대주주가 국민연금공단이었다).
+    """
+    text = _nfc(query)
+    return "other" if any(marker in text for marker in _OWNER_OTHER_MARKERS) else "self"
 
 
 def _nfc(s: str) -> str:
@@ -338,6 +378,26 @@ _MAX_WORDS = ("최대", "최고", "가장 큰", "가장 많은", "가장 높은"
 _MIN_WORDS = ("최소", "최저", "가장 작은", "가장 적은", "가장 낮은", "최소액")
 
 
+# "더 큰 쪽" 을 묻는 표현. `_COMPARE_WORDS` 는 task 판정용이라 "비교" 처럼
+# 승자를 묻지 않는 말까지 들어 있어서 따로 둔다.
+_WINNER_MAX_WORDS = ("더 큰", "더 많은", "더 높은", "큰 쪽", "많은 쪽", "높은 쪽",
+                     "어느 기업이 더", "어느 쪽이 더", "중 어느")
+_WINNER_MIN_WORDS = ("더 작은", "더 적은", "더 낮은", "작은 쪽", "적은 쪽", "낮은 쪽")
+
+
+def detect_compare_winner(query: str) -> bool:
+    """질문이 **누가 더 큰지/작은지**를 묻는가.
+
+    실측(2026-09-01, suite_v2 비교 문항 60건):
+        aggregation=max 로 잡혀 ▶ 계산이 붙은 24건 -> 정답률 96%
+        aggregation=none 이라 계산이 안 붙은 36건 -> 정답률 50%
+    질문에 "더 큰 쪽은 어느 기업인가" 가 명백히 적혀 있는데 계산 신호로
+    읽지 않아 생긴 차이다. 승자 판정을 파이썬이 하면 없어진다.
+    """
+    q = _nfc(query)
+    return any(w in q for w in _WINNER_MAX_WORDS + _WINNER_MIN_WORDS)
+
+
 def detect_aggregation(query: str) -> Aggregation:
     """질문이 값들 중 하나를 고르라고 하는가.
 
@@ -354,15 +414,31 @@ def detect_aggregation(query: str) -> Aggregation:
     return "none"
 
 
+# 질문이 **특정 공시 한 건을 지목**했는지 알아보는 표지.
+#   "현대건설의 2024년 05월 [기재정정]단일판매ㆍ공급계약체결에 기재된 ..."
+# 이런 질문에 "최신 정정본만" 규칙을 그대로 적용하면 그 문서를 버린다.
+# 실측(2026-09-01): 정답 문서가 최신본이 아닌 22문항 정답률 27%,
+# 최신본인 214문항은 81%. 현대건설 계약 하나가 판본 15개인데 14개를 버렸다.
+_PINPOINT_MONTH = re.compile(r"20\d{2}\s*(?:년\s*\d{1,2}\s*월|[.\-/]\s*\d{1,2})")
+
+
+def pinpoints_a_filing(query: str) -> bool:
+    """질문이 연·월까지 찍어서 특정 공시를 지목하는가."""
+    return bool(_PINPOINT_MONTH.search(_nfc(query)))
+
+
 def decide_latest_policy(query: str) -> LatestPolicy:
     q = _nfc(query)
     if not any(w in q for w in _CORRECTION_WORDS):
-        return "latest_only"
+        # 정정을 언급하지 않은 질문이라도 연·월을 찍었으면 그 시점 기준이다.
+        return "latest_in_window" if pinpoints_a_filing(q) else "latest_only"
     if any(w in q for w in _ALL_VERSION_WORDS):
         return "all_versions"
     if any(w in q for w in _FIRST_AND_FINAL_WORDS):
         return "first_and_final"
-    return "latest_only"
+    # "[기재정정]…2024년 05월 공시" 처럼 정정본을 시점까지 찍어 물으면
+    # 코퍼스 전체의 최종본이 아니라 **그 시점의 최신본**을 답해야 한다.
+    return "latest_in_window" if pinpoints_a_filing(q) else "latest_only"
 
 
 # ---------------------------------------------------------------- report_types
@@ -409,6 +485,15 @@ class RulePlanBuilder:
             entities = self.extractor.extract(query)
 
         companies = list(getattr(entities, "companies", []) or [])
+        mentions: dict[str, list[str]] = {}
+        for span in getattr(entities, "company_spans", []) or []:
+            try:
+                start, end, corp = span
+            except (TypeError, ValueError):
+                continue
+            surface = q[start:end]
+            if surface and surface not in mentions.setdefault(corp, []):
+                mentions[corp].append(surface)
         raw_periods = list(getattr(entities, "period", []) or [])
         metrics = list(getattr(entities, "metrics", []) or [])
         if companies:
@@ -452,6 +537,7 @@ class RulePlanBuilder:
             src["corrections_only"] = "rule"
 
         aggregation = detect_aggregation(q)
+        compare_winner = detect_compare_winner(q)
         if aggregation != "none":
             src["aggregation"] = "rule"
 
@@ -476,13 +562,16 @@ class RulePlanBuilder:
         return QueryPlan(
             answer_mode=mode,
             task=task,
+            value_owner=detect_value_owner(q),
             companies=companies,
+            company_mentions=mentions,
             periods=periods,
             report_types=report_types,
             report_kinds=report_kinds,
             latest_policy=latest_policy,
             corrections_only=corrections_only,
             aggregation=aggregation,
+            compare_winner=compare_winner,
             expected_fields=expected_fields,
             needs_multiple_documents=needs_multi,
             operations=operations,
@@ -716,7 +805,7 @@ class PlanValidator:
 __all__ += [
     "RulePlanBuilder", "PlanValidator", "PlanValidation", "PlanIssue",
     "classify_answer_mode", "classify_task", "decide_latest_policy", "detect_report_types",
-    "detect_aggregation",
+    "detect_aggregation", "detect_compare_winner", "pinpoints_a_filing",
 ]
 
 

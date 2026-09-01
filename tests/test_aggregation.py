@@ -119,7 +119,7 @@ def test_pack_marks_the_computed_maximum():
     pack = build_evidence_pack_from_retrieval("질문", [], facts=facts, aggregation="max")
     text = pack.prompt_text
     assert "▶ 한전기술 계약금액 최대값: 1,250,850,298,678" in text
-    assert "목록에서 직접 고르지 말고" in text
+    assert "직접 고르거나 직접 비교하지 말고" in text
 
 
 def test_maximum_is_computed_per_company():
@@ -189,3 +189,67 @@ def test_plain_lookup_lists_everything():
     text = build_evidence_pack_from_retrieval("질문", [], facts=facts,
                                               aggregation="none").prompt_text
     assert text.count("- 계약금액:") == 20
+
+
+# --------------------------------------------------------------------------- 승자 판정 (2026-09-01)
+
+def test_winner_is_computed_not_left_to_the_model():
+    """G0066 실제 실패 — 두 값을 정확히 찾아 놓고 대소 비교에서 틀렸다.
+
+        삼성중공업  4,571,600,000,000
+        삼성전자   22,764,764,160,000
+        답변: "삼성중공업의 계약금액이 더 큽니다"   <- 틀렸다
+
+    0이 열세 개 붙은 수를 모델이 눈으로 견주면 틀린다. 파이썬이 판정한다.
+    """
+    facts = [_row("삼성중공업", 4_571_600_000_000, "d1"),
+             _row("삼성전자", 22_764_764_160_000, "d2")]
+    pack = build_evidence_pack_from_retrieval("누가 더 큰가", [], facts=facts,
+                                              aggregation="max", compare_winner=True)
+    text = pack.prompt_text
+    assert "▶▶ 계약금액 비교 결과: 삼성전자가 더 크다" in text
+    assert "차이 18,193,164,160,000" in text
+
+
+def test_winner_works_without_max_or_min_in_the_question():
+    """"순자산액은 얼마이며 더 큰 쪽은?" 처럼 최대/최소 말이 없는 질문.
+
+    실측: 이런 문항 36건이 aggregation=none 으로 잡혀 계산이 아예 안 붙었다
+    (정답률 50%). 회사마다 최신 값을 대표로 뽑아 비교한다.
+    """
+    facts = [_row("셀트리온", 17_569_313_293_255, "d1"),
+             _row("하이브", 4_000_000_000_000, "d2")]
+    pack = build_evidence_pack_from_retrieval("더 큰 쪽은?", [], facts=facts,
+                                              aggregation="none", compare_winner=True)
+    assert "▶▶ 계약금액 비교 결과: 셀트리온가 더 크다" in pack.prompt_text
+
+
+def test_min_question_picks_the_smaller_one():
+    facts = [_row("A사", 100, "d1"), _row("B사", 300, "d2")]
+    pack = build_evidence_pack_from_retrieval("더 작은 쪽은?", [], facts=facts,
+                                              aggregation="min", compare_winner=True)
+    assert "A사가 더 작다" in pack.prompt_text
+
+
+def test_three_or_more_companies_get_a_ranking():
+    facts = [_row("A사", 100, "d1"), _row("B사", 300, "d2"), _row("C사", 200, "d3")]
+    pack = build_evidence_pack_from_retrieval("가장 큰 곳은?", [], facts=facts,
+                                              aggregation="max", compare_winner=True)
+    assert "▶▶ 계약금액 순위: B사 > C사 > A사" in pack.prompt_text
+
+
+def test_equal_values_are_reported_as_a_tie():
+    facts = [_row("A사", 500, "d1"), _row("B사", 500, "d2")]
+    pack = build_evidence_pack_from_retrieval("더 큰 쪽은?", [], facts=facts,
+                                              aggregation="max", compare_winner=True)
+    assert "동일" in pack.prompt_text
+
+
+def test_one_company_gets_no_winner_line():
+    """비교 대상이 하나뿐이면 승자를 만들지 않는다 — 없는 비교를 지어내면 안 된다."""
+    facts = [_row("A사", 500, "d1"), _row("A사", 700, "d2")]
+    pack = build_evidence_pack_from_retrieval("더 큰 쪽은?", [], facts=facts,
+                                              aggregation="max", compare_winner=True)
+    # 안내문에도 "▶▶" 글자가 들어 있으므로 판정 줄 자체를 본다
+    assert "비교 결과" not in pack.prompt_text
+    assert "순위" not in pack.prompt_text

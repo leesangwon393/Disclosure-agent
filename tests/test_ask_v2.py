@@ -384,3 +384,25 @@ def test_known_company_still_goes_through_search(builder, registry):
     out = make_ask(builder, registry, chunks).run(
         "삼성전자의 단일판매ㆍ공급계약체결 공시에 기재된 계약금액은 얼마인가?")
     assert out.stopped_at == "answered"
+
+
+# --------------------------------------------------------------------------- 지연 계측
+
+def test_timing_is_recorded_on_every_path(builder, registry):
+    """정상 경로든 게이트로 끊긴 경로든 총 소요 시간이 남아야 한다.
+
+    return 이 다섯 갈래라 한 군데만 빠뜨려도 '조기 종료 문항은 시간이 0' 이라는
+    거짓 통계가 나온다.
+    """
+    chunks = [make_chunk("c1", "ex_a", "삼성전자", {"계약금액": "1,000"})]
+    answered = make_ask(builder, registry, chunks).run(
+        "삼성전자의 단일판매ㆍ공급계약체결 공시에 기재된 계약금액은 얼마인가?")
+    gated = make_ask(builder, registry, []).run("삼성전자 현재 주가가 얼마야?")
+
+    for out in (answered, gated):
+        assert out.timing_ms.get("total", 0) >= 0
+        assert "other" in out.timing_ms
+    # 답변까지 간 문항은 검색을 실제로 돌렸다
+    assert answered.timing_ms.get("searches", 0) >= 1
+    # 게이트에서 끊긴 문항은 검색을 아예 안 돌린다 — 크레딧도 시간도 안 쓴다
+    assert gated.timing_ms.get("searches", 0) == 0

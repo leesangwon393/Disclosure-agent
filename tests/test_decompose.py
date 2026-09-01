@@ -259,7 +259,134 @@ def test_at_the_cap_it_still_splits():
     assert len(build_sub_queries(plan, "질문")) == 3
 
 
-def test_just_over_the_cap_does_not_split():
+def test_four_companies_still_split_per_company():
+    """예전엔 4개부터 쪼개기를 포기했다(상한 3).
+
+    회사 축은 유형·기간 축과 다르다. "A와 B와 C와 D의 매출액을 비교해줘" 는
+    대상을 **정확히 지목한** 질문이고 회사마다 답이 따로 있어야 한다.
+    한 번에 찾으면 어느 회사 값인지 섞인다(2026-08-31 배포 테스트에서
+    4개 회사 질문이 분해 없이 처리되는 것을 확인).
+    """
     plan = QueryPlan(companies=["A", "B", "C", "D"], needs_multiple_documents=True)
     subs = build_sub_queries(plan, "질문")
+    assert len(subs) == 4
+    assert [sq.plan.companies for sq in subs] == [["A"], ["B"], ["C"], ["D"]]
+
+
+# ---------------------------------------- 멀티 엔터티 질의 (2026-08-31 배포 테스트)
+#
+# "삼성전자와 삼성SDI의 2025년 연결 매출액을 비교해줘" 에서 삼성전자 값을
+# **삼성SDI 사업보고서의 '최대주주 삼성전자 재무현황'** 에서 가져왔다.
+# 회사 필터는 걸리는데 하위 질의 **텍스트에 상대 회사 이름이 남아 있어서**
+# 어휘 검색이 그 낱말을 점수에 썼다. 그래서 상대 회사가 언급된 청크
+# (특수관계자·타법인출자·최대주주 현황)가 위로 올라온다.
+
+from disclosure_rag.agent.decompose import MAX_COMPANY_SUB_QUERIES, _focus  # noqa: E402
+
+
+def test_other_company_names_are_removed_from_the_subquery():
+    q = "삼성전자와 삼성SDI의 2025년 연결기준 매출액을 비교해줘"
+    text = _focus(q, "삼성전자", drop=["삼성전자", "삼성SDI"])
+    assert "삼성SDI" not in text
+    assert "삼성전자" in text and "매출액" in text and "2025" in text
+
+
+def test_focus_term_is_not_damaged_by_a_substring_name():
+    """`LG` 를 지우다 `LG에너지솔루션` 을 깨뜨리면 안 된다."""
+    q = "LG에너지솔루션과 LG이노텍의 자산총계"
+    text = _focus(q, "LG에너지솔루션", drop=["LG에너지솔루션", "LG이노텍"])
+    assert "LG에너지솔루션" in text
+    assert "LG이노텍" not in text
+
+
+def test_orphan_particles_are_cleaned_up():
+    q = "삼성전자와 삼성SDI와 LG에너지솔루션과 SK하이닉스의 자산총계를 비교해줘"
+    text = _focus(q, "삼성전자", drop=["삼성전자", "삼성SDI", "LG에너지솔루션", "SK하이닉스"])
+    assert "  " not in text
+    assert " 와 " not in text and " 과 " not in text
+
+
+def _plan_with(n: int):
+    from disclosure_rag.agent.query_plan import QueryPlan
+    names = [f"회사{i}" for i in range(n)]
+    return QueryPlan(companies=names, task="compare", answer_mode="closed",
+                     needs_multiple_documents=True)
+
+
+@pytest.mark.parametrize("n", [2, 3, 4, 6, MAX_COMPANY_SUB_QUERIES])
+def test_every_company_gets_its_own_subquery(n):
+    """3개까지만 쪼개면 4개 이상 질문에서 어느 회사 값인지 섞인다."""
+    plan = _plan_with(n)
+    subs = build_sub_queries(plan, "회사0와 회사1의 매출액 비교")
+    assert len(subs) == n
+    assert [sq.plan.companies for sq in subs] == [[f"회사{i}"] for i in range(n)]
+
+
+def test_too_many_companies_falls_back_to_one_wide_search():
+    """상한을 넘으면 쪼개기를 포기하고 넓게 한 번 — 검색 폭주보다 낫다."""
+    plan = _plan_with(MAX_COMPANY_SUB_QUERIES + 1)
+    subs = build_sub_queries(plan, "여러 회사 비교")
     assert len(subs) == 1 and subs[0].kind == "base"
+
+
+def test_report_kind_axis_keeps_the_tight_limit():
+    """유형 축은 상한 3 그대로 — 19종에 걸린 질문이 19번 검색하면 안 된다."""
+    from disclosure_rag.agent.query_plan import QueryPlan
+    plan = QueryPlan(companies=["삼성전자"], report_kinds=[f"유형{i}" for i in range(5)],
+                     task="summarize", needs_multiple_documents=True)
+    subs = build_sub_queries(plan, "정정 내역이 있는가")
+    assert len(subs) == 1
+
+
+def test_over_the_cap_the_limitation_is_recorded(monkeypatch):
+    """쪼개기를 포기했으면 그 사실이 남아야 한다.
+
+    한 번에 넓게 찾으면 필터가 여러 회사를 모두 허용하므로 A사 값을 B사
+    문서(최대주주 현황 등)에서 집어올 수 있다. 조용히 넘어가면 나중에
+    "왜 4곳은 맞는데 15곳은 섞이지"를 로그 없이 다시 조사하게 된다.
+    """
+    from disclosure_rag.agent.decompose import decompose_and_search
+
+    plan = _plan_with(MAX_COMPANY_SUB_QUERIES + 3)
+    result = decompose_and_search(plan, "여러 회사 비교", lambda *_a, **_k: [])
+    assert result.notes and "귀속" in result.notes[0]
+
+    ok = decompose_and_search(_plan_with(3), "세 회사 비교", lambda *_a, **_k: [])
+    assert ok.notes == []
+
+
+def test_alias_spelling_of_other_companies_is_removed_too():
+    """질문이 약칭으로 썼으면 약칭을 지워야 한다.
+
+    회사 추출기는 상장명("삼성SDI")을 정식명("삼성에스디아이")으로 바꿔서
+    plan.companies 에 넣는다. 정식명만 지우면 질문에 적힌 '삼성SDI' 가 그대로
+    남아, 삼성전자 하위 질의가 여전히 그 낱말로 점수를 매긴다 — 배포 테스트에서
+    삼성전자 매출을 삼성SDI 사업보고서의 '최대주주 재무현황'에서 집어온 원인.
+    """
+    from disclosure_rag.agent.query_plan import QueryPlan
+
+    plan = QueryPlan(
+        companies=["삼성전자", "삼성에스디아이"],
+        company_mentions={"삼성전자": ["삼성전자"], "삼성에스디아이": ["삼성SDI"]},
+        task="compare", answer_mode="closed", needs_multiple_documents=True,
+    )
+    subs = build_sub_queries(plan, "삼성전자와 삼성SDI의 2025년 연결 매출액을 비교해줘")
+
+    focus = next(sq for sq in subs if sq.plan.companies == ["삼성전자"])
+    assert "삼성SDI" not in focus.text
+    assert "삼성전자" in focus.text
+
+    other = next(sq for sq in subs if sq.plan.companies == ["삼성에스디아이"])
+    assert "삼성SDI" in other.text          # 자기 표기는 남는다
+    assert "삼성전자" not in other.text
+
+
+def test_narrow_copies_company_mentions():
+    """하위 질의가 원본 계획의 dict 를 공유하면 한쪽 수정이 전체를 오염시킨다."""
+    from disclosure_rag.agent.decompose import _narrow
+    from disclosure_rag.agent.query_plan import QueryPlan
+
+    plan = QueryPlan(companies=["A", "B"], company_mentions={"A": ["에이"]})
+    clone = _narrow(plan, companies=["A"])
+    clone.company_mentions["A"].append("오염")
+    assert plan.company_mentions["A"] == ["에이"]

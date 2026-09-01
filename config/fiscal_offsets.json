@@ -1,0 +1,121 @@
+{
+  "note": "연도 = 기수 - offset  (offset 은 음수)",
+  "companies": {
+    "삼성전자": {
+      "offset": -1968,
+      "samples": 924,
+      "agreement": 0.8582
+    },
+    "SK하이닉스": {
+      "offset": -1947,
+      "samples": 961,
+      "agreement": 0.7232
+    },
+    "한미반도체": {
+      "offset": -1979,
+      "samples": 658,
+      "agreement": 0.7781
+    },
+    "삼성전기": {
+      "offset": -1972,
+      "samples": 863,
+      "agreement": 0.861
+    },
+    "LG이노텍": {
+      "offset": -1975,
+      "samples": 966,
+      "agreement": 0.7412
+    },
+    "현대자동차": {
+      "offset": -1967,
+      "samples": 1056,
+      "agreement": 0.8466
+    },
+    "기아": {
+      "offset": -1943,
+      "samples": 872,
+      "agreement": 0.8085
+    },
+    "현대모비스": {
+      "offset": -1976,
+      "samples": 911,
+      "agreement": 0.7936
+    },
+    "현대오토에버": {
+      "offset": -1999,
+      "samples": 726,
+      "agreement": 0.8788
+    },
+    "레인보우로보틱스": {
+      "offset": -2010,
+      "samples": 688,
+      "agreement": 0.8387
+    },
+    "두산로보틱스": {
+      "offset": -2014,
+      "samples": 645,
+      "agreement": 0.893
+    },
+    "LG에너지솔루션": {
+      "offset": -2019,
+      "samples": 728,
+      "agreement": 0.8146
+    },
+    "삼성SDI": {
+      "offset": -1969,
+      "samples": 1032,
+      "agreement": 0.7597
+    },
+    "에코프로비엠": {
+      "offset": -2015,
+      "samples": 934,
+      "agreement": 0.6927
+    },
+    "POSCO홀딩스": {
+      "offset": -1967,
+      "samples": 1053,
+      "agreement": 0.6002
+    },
+    "세아베스틸지주": {
+      "offset": -1954,
+      "samples": 766,
+      "agreement": 0.7206
+    },
+    "현대제철": {
+      "offset": -1964,
+      "samples": 675,
+      "agreement": 0.8415
+    },
+    "고려아연": {
+      "offset": -1973,
+      "samples": 1117,
+      "agreement": 0.7466
+    },
+    "신한지주": {
+      "offset": -2000,
+      "samples": 1194,
+      "agreement": 0.6307
+    },
+    "삼성생명": {
+      "offset": -1955,
+      "samples": 2106,
+      "agreement": 0.8034
+    },
+    "삼성화재해상보험": {
+      "offset": -1949,
+      "samples": 2613,
+      "agreement": 0.6414
+    },
+    "미래에셋증권": {
+      "offset": -1968,
+      "samples": 1240,
+      "agreement": 0.7661
+    }
+  },
+  "skipped": [
+    "KB금융",
+    "메리츠금융지주",
+    "우리금융지주",
+    "하나금융지주"
+  ]
+}

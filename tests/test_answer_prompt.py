@@ -191,3 +191,121 @@ def test_evidence_whitelist_includes_every_block_we_actually_build():
     p = build_answer_prompt(QueryPlan(answer_mode="closed", task="lookup"))
     for block in ("[EVIDENCE]", "[FACT]", "[전수 확인]"):
         assert block in p, block
+
+
+def test_prompt_forbids_taking_a_value_from_another_companys_document():
+    """A사 값을 B사 공시에서 가져오지 말라는 규칙이 있어야 한다.
+
+    회사의 사업보고서에는 최대주주·특수관계자 재무현황처럼 **다른 회사 수치**가
+    실린다. 근거 블록에 '회사:' 라벨은 이미 붙어 있었지만, 그걸 어떻게 쓰라는
+    말이 프롬프트에 없어서 모델이 그 표를 그대로 썼다
+    (2026-08-31 배포 테스트: 삼성전자 값이 삼성SDI 사업보고서에서 나왔다).
+    """
+    from disclosure_rag.agent.answer_generator import build_answer_prompt
+    from disclosure_rag.agent.query_plan import QueryPlan
+
+    text = build_answer_prompt(QueryPlan(answer_mode="closed", task="compare"))
+    assert "회사:" in text
+    assert "최대주주" in text
+
+
+def test_evidence_block_names_the_real_owner_when_known():
+    """근거 블록이 '누구 수치인지' 를 이름으로 말해야 한다.
+
+    절 이름만 보고 "다른 법인의 것일 수 있다" 고 하면 모델은 그 근거를 아예
+    버린다. 이름을 알려주면 잘못 쓰는 것도 막고 "최대주주의 매출액은?" 에는
+    답할 수 있다.
+    """
+    from disclosure_rag.agent.evidence import third_party_note
+
+    named = third_party_note(["VII. 주주에 관한 사항"], "국민연금공단", "KB금융")
+    assert "국민연금공단" in named and "KB금융" in named
+
+    # 이름을 모르면 절 기준 경고로 물러선다
+    fallback = third_party_note(["VII. 주주에 관한 사항"])
+    assert "최대주주" in fallback
+
+    # 그 회사 자신의 수치면 아무 말도 붙이지 않는다
+    assert third_party_note(["III. 재무에 관한 사항"]) == ""
+    assert third_party_note(["VII. 주주에 관한 사항"], "KB금융", "KB금융") != named
+
+
+def test_evidence_block_states_the_table_unit():
+    """표 단위를 안 주면 모델이 1,000배 틀린 표의 값을 답한다."""
+    from disclosure_rag.agent.evidence import unit_note
+
+    assert "표 단위: 백만원" in unit_note("(단위 : 백만원, %)")
+    assert "표 단위: 천원" in unit_note("(단위:천원)")
+    # 금액 단위가 아니면 줄을 안 붙인다
+    assert unit_note("(단위 : 주, %)") == ""
+    assert unit_note(None) == ""
+
+
+# --------------------------------------------------------------------------- 재무제표 구분 (2026-09-01)
+
+def test_consolidated_and_separate_statements_are_told_apart():
+    """같은 항목이 두 재무제표에 다른 값으로 있다.
+
+    CJ제일제당 부채총계: 연결과 별도가 다른 값인데 구분 없이 하나만 답해 오답.
+    """
+    from disclosure_rag.agent.evidence import statement_kind
+
+    assert statement_kind(["III. 재무에 관한 사항", "3. 연결재무제표 주석"]) == "연결재무제표"
+    assert statement_kind(["III. 재무에 관한 사항", "5. 재무제표 주석"]) == "별도재무제표"
+
+
+def test_spaced_out_statement_names_are_caught():
+    """공시 원문은 글자 사이를 띄우기도 한다. 22,162행이 이 형태다."""
+    from disclosure_rag.agent.evidence import statement_kind
+
+    assert statement_kind(["(첨부)연 결 재 무 제 표", "주석"]) == "연결재무제표"
+    assert statement_kind(["(첨부)재 무 제 표", "주석"]) == "별도재무제표"
+
+
+def test_sections_that_merely_contain_the_word_are_excluded():
+    """"연결" 만 보고 판정하면 안 되는 것들."""
+    from disclosure_rag.agent.evidence import statement_kind
+
+    assert statement_kind(["XII. 상세표", "1. 연결대상 종속회사 현황(상세)"]) == ""
+    assert statement_kind(["연결 내부회계관리제도 감사 또는 검토의견"]) == ""
+
+
+def test_non_statement_sections_get_no_line_at_all():
+    """「주주에 관한 사항」에 "별도재무제표" 를 붙이면 최대주주 수정이 도로 망가진다."""
+    from disclosure_rag.agent.evidence import statement_kind, statement_note
+
+    assert statement_kind(["VII. 주주에 관한 사항"]) == ""
+    assert statement_note(["VII. 주주에 관한 사항"]) == ""
+    assert statement_note(["II. 사업의 내용"]) == ""
+    assert statement_note(None) == ""
+
+
+# --------------------------------------------------------------------------- 기수·당기 (2026-09-01)
+
+def test_current_and_prior_period_are_spelled_out_as_years():
+    """"당기" 가 언제인지는 문서마다 다르다. 실측 35,300건."""
+    from disclosure_rag.agent.evidence import period_note
+
+    note = period_note("삼성전자", "2023-12", "20240318", "매출액")
+    assert "당기 = 2023년" in note and "전기 = 2022년" in note
+
+
+def test_fiscal_period_is_converted_only_when_the_offset_is_known():
+    """기수 환산은 회사별 오프셋을 아는 경우에만 한다.
+
+    청크마다 최대 기수를 당기로 추측하면 일치율이 75.8% 다(21개사 전수).
+    4건 중 1건이 틀린 환산을 근거에 박으면 모델이 그걸 믿는다.
+    """
+    from disclosure_rag.agent.evidence import period_note
+
+    known = period_note("삼성전자", "2023-12", "20240318", "제55기 1분기 매출액")
+    assert "제55기 = 2023년" in known
+
+    unknown = period_note("듣도보도못한회사", "2023-12", "20240318", "제55기")
+    assert "제55기" not in unknown          # 모르면 아무 말도 하지 않는다
+    assert "당기 = 2023년" in unknown        # 당기/전기는 그래도 알려준다
+
+
+def test_no_period_means_no_line():
+    from disclosure_rag.agent.evidence import period_note
+    assert period_note(None, None, None, None) == ""

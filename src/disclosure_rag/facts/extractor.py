@@ -38,6 +38,7 @@ periodic(재무제표)은 계정과목 정규화·연결/별도 구분·단위 �
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Iterable, MutableMapping
 
 from pydantic import BaseModel, Field
@@ -128,6 +129,78 @@ class Fact(BaseModel):
     unit_value: str | None = None           # DART TU[AUNITVALUE] — 이미 정규화된 값
     section_path: list[str] = Field(default_factory=list)
 
+    # 이 수치의 주인. 보통은 보고서를 낸 회사(company)지만, 「주주에 관한 사항」의
+    # '최대주주 및 특수관계인 현황' 표처럼 **다른 법인의 재무현황**을 싣는 표가
+    # 있다. 그 표에는 주인 이름이 같은 표 안에 적혀 있으므로 추출할 때 붙인다.
+    # None 이면 company 가 주인이다.
+    value_owner: str | None = None
+
+
+# 표 안에 이 항목이 있으면, 그 표의 수치는 **그 이름의 법인 것**이다.
+# (「VII. 주주에 관한 사항」의 최대주주의 개요 표)
+#
+# '성명' 은 일부러 넣지 않았다. 「VIII. 임원 및 직원 등에 관한 사항」의 임원
+# 보수 표에도 성명이 있어서, 넣으면 임원 보수가 '남의 값'으로 분류되어
+# "삼성전자 임원 보수는?" 이 막힌다. 최대주주가 개인이면 애초에 재무현황 표를
+# 내지 않으므로(개인은 재무제표 제출 대상이 아니다) 실익도 없다.
+# 우리 코퍼스 70개사에는 개인 최대주주 사례가 0건이다(2026-09-01 확인).
+OWNER_NAME_KEYS = ("법인 또는 단체의 명칭", "법인또는단체의명칭")
+
+# 「최대주주의 개요」 뒤에 이름 없이 따라붙는 요약재무정보 표를 알아보는 표지.
+# 이 중 둘 이상이 한 표에 있으면 재무제표 표로 본다.
+_FINANCIAL_KEYS = (
+    "자산총계", "부채총계", "자본총계", "매출액", "영업이익", "당기순이익",
+    "유동자산", "비유동자산", "유동부채", "비유동부채", "자본금", "이익잉여금",
+    "부채와자본총계", "영업수익",
+)
+
+
+def _table_owner(kv) -> str | None:
+    """이 표의 수치가 누구 것인지 표 안에서 찾는다.
+
+    2026-09-01 실측: 이걸 안 해서 국민연금공단의 자산총계가 KB금융·신한지주·
+    하나금융지주·POSCO홀딩스의 값으로 저장돼 있었다(네 곳 다 464,418). 값도
+    문서도 맞았고 **주인만 없었다.**
+    """
+    for pair in kv.pairs:
+        key = (pair.key or "").strip()
+        if any(marker in key for marker in OWNER_NAME_KEYS):
+            value = (pair.value or "").strip()
+            if value and value not in _EMPTY_VALUES:
+                return value
+    return None
+
+
+def _looks_like_financial_statement(kv) -> bool:
+    """이름은 없지만 재무제표로 보이는 표인가.
+
+    실제 문서(SK하이닉스 반기보고서)를 열어 확인한 형태:
+
+        표1  법인 또는 단체의 명칭 = SK스퀘어 주식회사   ← 이름 있음
+        표2  법인 또는 단체의 명칭 = SK주식회사         ← 이름 있음
+        표3  구 분 = 제33기 반기 / [유동자산] ... 자산총계 199,360,274
+        표4  구 분 = 제33기 반기 / ... (별도재무제표)
+
+    표3·표4 는 표2(SK주식회사)의 상세 재무제표인데 **이름을 다시 적지 않는다.**
+    사람이 읽으면 "위에서 말한 그 회사"인 게 당연하기 때문이다. 표3 의
+    자산총계가 표2 와 정확히 같은 값인 것으로 확인했다.
+
+    조건을 재무 항목 2개 이상으로 둔 이유: 임원 보수·주식 소유현황처럼 이름
+    없는 표는 많은데, 그런 표에는 자산총계·부채총계가 같이 나오지 않는다.
+    """
+    hits = 0
+    seen: set[str] = set()
+    for pair in kv.pairs:
+        key = (pair.key or "").strip().replace(" ", "").strip("[]")
+        for marker in _FINANCIAL_KEYS:
+            if marker in key and marker not in seen:
+                seen.add(marker)
+                hits += 1
+                break
+        if hits >= 2:
+            return True
+    return False
+
 
 def normalize_key(key: str) -> tuple[str, str | None]:
     """항목명에서 번호와 단위를 떼어낸다. -> (key_norm, unit)
@@ -148,12 +221,99 @@ def normalize_key(key: str) -> tuple[str, str | None]:
     return k, unit
 
 
+# 한국 공시의 회계 표기 — 실측으로 확인한 것만 넣었다(2026-09-01, 청크 15만 개).
+#
+#   △59,917        음수. 표에 "[△는 부(-)의 값임]" 범례가 함께 온다 (690건+)
+#   1%p            퍼센트포인트. `%` 와 **다른 단위**다 (164건, 전부 해석 실패)
+#   63조 7,454억원  조·억 혼용. `_SCALE_RE` 는 단일 단위만 읽었다 (12,441건)
+#   69,406주 (주1)  숫자 뒤 주석 표시 (938건)
+#   ０             전각 숫자 (18건)
+#
+# 괄호 음수 `(4,935,379)` 는 이미 처리되고 있다(90,084건 음수 저장) — 손대지 않는다.
+_MINUS_MARKS = ("△", "▲", "▽", "▼")
+_FULLWIDTH_DIGITS = {ord("０") + i: ord("0") + i for i in range(10)}
+_FOOTNOTE_TAIL = re.compile(r"\s*(?:\(\s*주\s*\d*\s*\)|주\s*\d+\s*\)|\*+|＊+)\s*$")
+_PERCENT_POINT = re.compile(r"^(-?[\d,]+(?:\.\d+)?)\s*(?:%\s*[pP]|퍼센트\s*포인트|%포인트)$")
+# "63조 7,454억원", "1조 2,345억 6,789만원" 처럼 큰 단위부터 이어 붙인 금액
+_COMPOUND_UNIT = re.compile(r"([\d,]+(?:\.\d+)?)\s*(조|억|만|천)")
+_COMPOUND_OK = re.compile(r"^-?(?:[\d,]+(?:\.\d+)?\s*(?:조|억|만|천)\s*)+[\d,]*\s*원?$")
+
+
+# 회계 괄호 음수. `(4,935,379)` 는 -4,935,379 다. 예전에는 정기공시
+# 경로에서만 처리해, 서식공시(주요사항·거래소·대량보유)에서는 부호를
+# 통째로 잃었다(2026-09-01 발견). 괄호 안이 **수치일 때만** 뗀다 —
+# `(주1)` `(단위: 백만원)` 같은 것은 건드리지 않는다.
+_PAREN_NEGATIVE = re.compile(r"^\(\s*([\d,]+(?:\.\d+)?)\s*\)$")
+
+
+def _strip_accounting_marks(text: str) -> tuple[str, bool]:
+    """세모 부호·괄호 음수·주석 표시를 떼어내고 음수 여부를 돌려준다."""
+    t = text.strip()
+    negative = False
+    while t[:1] in _MINUS_MARKS:
+        negative = True
+        t = t[1:].strip()
+    t = _FOOTNOTE_TAIL.sub("", t).strip()
+    m = _PAREN_NEGATIVE.match(t)
+    if m:
+        return m.group(1), True
+    return t, negative
+
+
+def _parse_compound_amount(text: str) -> float | None:
+    """"63조 7,454억원" -> 6_374_540_000_000. 단일 단위는 여기 안 온다."""
+    if not _COMPOUND_OK.match(text):
+        return None
+    matches = list(_COMPOUND_UNIT.finditer(text))
+    if len(matches) < 2:                     # 단일 단위는 기존 `_SCALE_RE` 가 본다
+        return None
+    total = 0.0
+    for m in matches:
+        try:
+            total += float(m.group(1).replace(",", "")) * _SCALE[m.group(2)]
+        except (ValueError, KeyError):
+            return None
+    # 단위 없이 남은 꼬리("… 6,789원")
+    tail = text[matches[-1].end():].strip().rstrip("원").strip()
+    if tail:
+        try:
+            total += float(tail.replace(",", ""))
+        except ValueError:
+            return None
+    return total
+
+
 def parse_value(value: str, *, key_unit: str | None = None, unit_value: str | None = None
                 ) -> tuple[float | None, str | None, str | None]:
     """값 문자열을 (숫자, 단위, 날짜) 로 해석한다. 해석 실패는 None — 지어내지 않는다."""
-    v = (value or "").strip()
+    # 전각 숫자(０１２)만 반각으로 바꾼다.
+    # NFKC 를 통째로 쓰면 안 된다 — `㈜LS` 가 `(주)LS` 로 바뀌어 회사 이름이
+    # 훼손된다. 최대주주 이름(value_owner)이 그 값으로 저장되므로 치명적이다.
+    v = unicodedata.normalize("NFC", value or "").strip().translate(_FULLWIDTH_DIGITS)
     if not v or v in _EMPTY_VALUES:
         return None, key_unit, None
+
+    # 퍼센트포인트는 `%` 와 다른 단위다. 5%->7% 는 "2%p 상승" 이지 "2% 상승" 이 아니다.
+    m = _PERCENT_POINT.match(v)
+    if m:
+        try:
+            return float(m.group(1).replace(",", "")), "%p", None
+        except ValueError:
+            return None, key_unit, None
+
+    # 세모 부호·주석 표시를 떼고 다시 본다 (서식공시에도 적용된다)
+    stripped, negative = _strip_accounting_marks(v)
+    if stripped != v:
+        num, unit, date = parse_value(stripped, key_unit=key_unit, unit_value=unit_value)
+        if num is not None:
+            return (-num if negative else num), unit, date
+        if date is not None:
+            return None, unit, date
+        v = stripped
+
+    compound = _parse_compound_amount(v)
+    if compound is not None:
+        return compound, key_unit or "원", None
 
     # DART 가 이미 정규화해 준 값이 있으면 날짜 판정에 먼저 쓴다 (AUNITVALUE)
     for cand in (unit_value, v):
@@ -255,13 +415,101 @@ def _iter_kv(sections: Iterable[SectionNode]):
                 yield sec, child
 
 
+def _iter_nodes(sections: Iterable[SectionNode]):
+    """절 안의 자식들을 **문서에 적힌 순서대로** 돌려준다.
+
+    `_iter_kv` 는 키-값 표만 준다. 그런데 최대주주 이름은 키-값 표가 아니라
+    **일반 표의 '명 칭' 열**에 있는 경우가 있다(한화에어로스페이스 등 66개
+    문서). 순서가 필요해서 따로 만들었다 — 이름이 먼저 나오고 재무현황이
+    뒤에 오기 때문이다.
+    """
+    for sec in sections:
+        for child in sec.children:
+            if isinstance(child, SectionNode):
+                yield from _iter_nodes([child])
+            else:
+                yield sec, child
+
+
+# 최대주주 이름이 실린 일반 표를 알아보는 표지.
+_OWNER_TABLE_HINTS = ("최대주주", "법인 기본정보", "법인기본정보")
+# 그 표에서 이름이 들어 있는 열의 머리글.
+_OWNER_COLUMN_HEADERS = ("명칭", "명 칭", "법인명", "상호", "회사명", "단체명")
+
+
+def _owner_from_table(node) -> str | None:
+    """일반 표에서 최대주주 이름을 꺼낸다.
+
+    실제 형태(한화에어로스페이스 분기보고서):
+
+        title_hint = "나. 최대주주의 기본정보(1) 법인 기본정보"
+        머리글      명 칭 | 출자자수(명) | 대표이사 ... | 최대주주 ...
+        본문        (주)한화 | 74,702 | 김동관 ...
+
+    바로 뒤에 "(2) 최대주주(법인 또는 단체)의 최근 결산기 재무현황" 표가
+    이름 없이 붙는다. 이 표를 안 읽으면 그 재무현황이 한화에어로스페이스
+    자신의 값으로 저장된다.
+    """
+    hint = (getattr(node, "title_hint", None) or "")
+    rows = getattr(node, "rows", None)
+    if not rows or not any(marker in hint for marker in _OWNER_TABLE_HINTS):
+        return None
+    # 이름 열의 위치를 머리글에서 찾는다.
+    col = None
+    for row in rows[:3]:
+        for cell in row:
+            text = (getattr(cell, "text", "") or "").replace(" ", "")
+            if text in (h.replace(" ", "") for h in _OWNER_COLUMN_HEADERS):
+                col = getattr(cell, "col", None)
+                break
+        if col is not None:
+            break
+    if col is None:
+        return None
+    for row in rows:
+        for cell in row:
+            if getattr(cell, "col", None) != col or getattr(cell, "is_header", False):
+                continue
+            value = (getattr(cell, "text", "") or "").strip()
+            if value and value not in _EMPTY_VALUES and value != "-":
+                return value
+    return None
+
+
 def extract_facts(
     parsed: ParsedDocument, row: ManifestRow, correction: CorrectionRecord,
     *, filter_stats: MutableMapping[str, int] | None = None,
 ) -> list[Fact]:
     """ParsedDocument 하나에서 fact 행들을 뽑는다 (chunk_id 는 아직 비어 있음)."""
     facts: list[Fact] = []
-    for section, kv in _iter_kv(parsed.sections):
+    # 절이 바뀌면 초기화한다. 「주주에 관한 사항」에서 본 이름이 「임원 및
+    # 직원」까지 따라가면 안 된다.
+    carried_owner: str | None = None
+    carried_section: tuple[str, ...] | None = None
+
+    for section, node in _iter_nodes(parsed.sections):
+        section_key = tuple(section.path)
+        if section_key != carried_section:
+            carried_owner, carried_section = None, section_key
+
+        if not isinstance(node, KeyValueNode):
+            # 키-값 표가 아니면 값을 뽑지 않는다. 다만 최대주주 이름이 실린
+            # 일반 표면 이름만 기억해 둔다 — 뒤에 이름 없는 재무현황이 온다.
+            found = _owner_from_table(node)
+            if found:
+                carried_owner = found
+            continue
+        kv = node
+
+        # 표 하나를 통째로 보고 주인을 먼저 정한다. 행 단위로는 알 수 없다 —
+        # 주인 이름은 표의 다른 행에 적혀 있기 때문이다.
+        table_owner = _table_owner(kv)
+        if table_owner:
+            carried_owner = table_owner
+        elif carried_owner and _looks_like_financial_statement(kv):
+            # 이름 없이 따라붙은 재무제표 표 — 바로 앞에서 본 주인의 것이다.
+            table_owner = carried_owner
+
         for pair in kv.pairs:
             raw_key, raw_val = (pair.key or "").strip(), (pair.value or "").strip()
             if not raw_key or raw_val in _EMPTY_VALUES:
@@ -299,6 +547,9 @@ def extract_facts(
                 value_text=raw_val, value_num=num, value_unit=unit, value_date=date,
                 field_code=pair.field_code, unit_code=pair.unit_code, unit_value=pair.unit_value,
                 section_path=list(section.path),
+                # 주인이 따로 적힌 표면 그 이름을, 아니면 None(=회사 자신).
+                value_owner=(table_owner if table_owner and table_owner != row.corp_name
+                             else None),
             ))
     return facts
 

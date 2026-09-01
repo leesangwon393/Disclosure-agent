@@ -12,7 +12,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from score_answers import _answer_hit, _gold_answers, _is_refusal, _label, _norm  # noqa: E402
+from score_answers import (  # noqa: E402
+    _answer_hit, _gold_answers, _is_refusal, _label, _norm,
+    evidence_hit, korean_amounts, unit_stated,
+)
 
 
 def test_comma_notation_is_ignored():
@@ -31,9 +34,16 @@ def test_wrong_number_is_not_a_hit():
     assert not _answer_hit("순자산액은 224,787,773,988,055원입니다", ["224,787,773,988,054"])
 
 
-def test_rescaled_number_is_not_a_hit():
-    """`7,661,584백만원` 은 `7,661,584,000,000` 의 정답 표기가 아니다."""
-    assert not _answer_hit("7,661,584백만원입니다", ["7,661,584,000,000"])
+def test_a_number_without_its_unit_is_not_a_hit():
+    """`7,661,584원` 은 `7,661,584,000,000` 이 아니다 — 백만 배 틀렸다.
+
+    2026-09-01: 이 자리에 있던 테스트는 `7,661,584백만원` 도 오답이라고
+    못 박고 있었다. 그런데 7,661,584 x 1,000,000 = 7,661,584,000,000 —
+    **같은 값이다**. 맞는 답을 오답으로 세던 규칙이라 고쳤다.
+    """
+    assert not _answer_hit("7,661,584원입니다", ["7,661,584,000,000"])
+    assert not _answer_hit("7,661,584입니다", ["7,661,584,000,000"])
+    assert _answer_hit("7,661,584백만원입니다", ["7,661,584,000,000"])
 
 
 def test_substring_of_a_longer_number_is_not_a_hit():
@@ -549,3 +559,206 @@ def test_body_only_keeps_content_and_drops_ids():
     body = _body_only(text)
     assert "1,000원" in body and "근거" in body
     assert "20240101000001" not in body and "C1" not in body
+
+
+# --------------------------------------------------------------------------- 지연 분해 (2026-08-31)
+
+def test_csv_columns_are_the_union_of_all_rows(tmp_path):
+    """첫 행에 없는 컬럼이 뒷 행에 있어도 저장이 죽으면 안 된다.
+
+    조기 종료 문항(게이트)은 ms_rerank 가 없다. 그런 문항이 1번으로 오면
+    첫 행 기준으로 헤더를 잡던 예전 코드는 DictWriter ValueError 로 죽어
+    **측정 결과 전체가 저장되지 않는다.** 1시간 30분짜리 실행이 날아간다.
+    """
+    rows = [_v2_row(stopped_at="scope_gate", ms_total=12.0),
+            _v2_row(ms_total=9000.0, ms_rerank=4200.0, ms_bm25=300.0)]
+    _write(tmp_path, {"mode": "full", "pipeline": "v2"}, _aggregate(rows, "full"), rows)
+    header = (tmp_path / "results.csv").read_text(encoding="utf-8-sig").splitlines()[0]
+    assert "ms_rerank" in header and "ms_total" in header
+
+
+def test_latency_breakdown_lands_in_metrics():
+    m = _aggregate([_v2_row(ms_total=1000.0, ms_rerank=400.0),
+                    _v2_row(ms_total=3000.0, ms_rerank=1200.0)], "full")
+    assert m["latency_breakdown"]["rerank"]["median_ms"] == 1200.0
+    assert m["latency_breakdown"]["total"]["n"] == 2
+
+
+# --------------------------------------------------------------- 정정 체인 (A-9a)
+#
+# 정답지에 원본 문서 ID 가 박혀 있는데 검색이 최신 정정본을 가져오면 예전
+# 채점기는 '검색실패'로 찍었다. 실측 43건 중 14건이 그것이었다.
+
+GROUPS = {"exchange_1": "exchange_1", "exchange_1r": "exchange_1",
+          "exchange_2": "exchange_2"}
+
+
+def test_the_same_document_is_a_hit():
+    assert evidence_hit({"exchange_1"}, {"exchange_1"}, GROUPS)
+
+
+def test_another_version_of_the_same_correction_chain_is_a_hit():
+    assert evidence_hit({"exchange_1"}, {"exchange_1r"}, GROUPS)
+
+
+def test_a_different_chain_is_not_a_hit():
+    assert not evidence_hit({"exchange_1"}, {"exchange_2"}, GROUPS)
+
+
+def test_documents_outside_any_chain_are_each_their_own_group():
+    """체인에 없는 문서 둘을 같은 그룹(None)으로 묶으면 안 된다."""
+    assert not evidence_hit({"zzz_a"}, {"zzz_b"}, GROUPS)
+
+
+def test_no_chain_map_falls_back_to_document_ids():
+    assert evidence_hit({"exchange_1"}, {"exchange_1"}, {})
+    assert not evidence_hit({"exchange_1"}, {"exchange_1r"}, {})
+
+
+def test_empty_gold_is_never_a_hit():
+    assert not evidence_hit(set(), {"exchange_1"}, GROUPS)
+
+
+# ------------------------------------------------------------- 단위 환산 (A-9b)
+
+def test_percent_notation_equals_the_decimal_form():
+    """정답지 `0.0430`, 답변 `4.30%` — 같은 값이다(G0146 실측)."""
+    assert _answer_hit("지분율은 4.30% 입니다", ["0.0430"])
+    assert _answer_hit("지분율은 0.0430 입니다", ["4.30%"])
+
+
+def test_a_hundredfold_number_without_a_percent_sign_is_not_a_hit():
+    """`%` 가 없으면 100배를 인정하지 않는다 — `4.30` 과 `430` 은 다른 값이다."""
+    assert not _answer_hit("430 건입니다", ["4.30"])
+
+
+@pytest.mark.parametrize("text,won", [
+    ("3조 1,128억원", 3_112_800_000_000),
+    ("3천억원", 300_000_000_000),
+    ("1조원", 1_000_000_000_000),
+    ("255,698,325천원", 255_698_325_000),
+    ("5만 5,000원", 55_000),
+])
+def test_korean_amounts_are_read_in_won(text, won):
+    assert korean_amounts(text) == {won}
+
+
+def test_plain_numbers_are_not_read_as_korean_amounts():
+    assert korean_amounts("224,787,773,988,054원") == set()
+    assert korean_amounts("2024년 3월 15일") == set()
+
+
+def test_korean_amount_matches_the_gold_in_table_units():
+    """정답지 `3,112,850`(백만원 표) vs 답변 `3조 1,128억원`."""
+    assert _answer_hit("영업비용은 3조 1,128억원입니다", ["3,112,850"])
+
+
+def test_a_thousandfold_korean_amount_is_not_a_hit():
+    """`255,698,325천원` 은 백만원 표의 `3,112,850` 이 아니다."""
+    assert not _answer_hit("영업비용은 255,698,325천원입니다", ["3,112,850"])
+
+
+# ------------------------------------------------------------- 단위 표기 (A-9c)
+#
+# 대회는 사람이 채점한다. 숫자만 적고 단위를 빼면 감점이다. 지금까지는
+# 숫자만 비교해서 이게 지표에 전혀 안 보였다.
+
+def test_a_number_without_a_unit_is_flagged():
+    assert unit_stated("3,112,850") == 0
+
+
+def test_a_number_with_a_unit_passes():
+    assert unit_stated("3,112,850백만원입니다") == 1
+    assert unit_stated("지분율은 4.30% 입니다") == 1
+
+
+def test_an_answer_with_no_number_is_not_counted():
+    assert unit_stated("제공된 근거로는 확인할 수 없습니다") is None
+
+
+# --------------------------------------------- 2026-09-01 교차 검수에서 잡은 것
+#
+# 아래는 전부 "느슨해서 틀린 답을 정답으로 세던" 규칙이다. 채점기가 후하면
+# 개선이 없는데도 있는 것처럼 보인다.
+
+from score_answers import _strip_ordinals, _renderings  # noqa: E402
+from decimal import Decimal  # noqa: E402
+
+
+def test_a_short_gold_does_not_borrow_a_unit_it_was_not_given():
+    """정답지의 `4.0` 에 답변 `3,999,455 백만원` 이 걸리면 안 된다.
+
+    네 자리 미만 정답에는 단위 환산을 적용하지 않는다. 다만 답변에 적힌
+    숫자 자체가 정답과 같으면(`150` <-> `150억원`) 그건 예전부터 정답으로
+    센다 — 정답지에 단위가 안 적혀 있어 구분할 방법이 없다. 한 자리 정답이
+    남의 숫자에 걸리는 경우는 이 규칙의 알려진 한계다.
+    """
+    assert not _answer_hit("금액은 3,999,455 백만원입니다", ["4.0"])
+    assert _answer_hit("영업이익은 150억원입니다.", ["150"])
+
+
+def test_a_number_inside_an_article_reference_is_not_a_value():
+    assert not _answer_hit("정관 제3조 제1항에 따라 배당합니다.", ["3"])
+    assert not _answer_hit("제55기 정기주주총회입니다.", ["55"])
+
+
+def test_a_plain_count_still_matches():
+    assert _answer_hit("총 3건입니다.", ["3"])
+
+
+def test_ordinals_are_stripped_but_amounts_survive():
+    assert "3" not in _strip_ordinals("제3조 제1항")
+    assert "3,112,850" in _strip_ordinals("금액은 3,112,850백만원")
+
+
+def test_a_near_miss_amount_is_not_a_hit():
+    """예전엔 상대오차 5e-4 창으로 견줘 서로 다른 두 값이 같아졌다."""
+    assert not _answer_hit("금액은 3,999,455 백만원입니다", ["4.0"])
+    assert not _answer_hit("금액은 255,698,325천 원입니다", ["25,575,912"])
+
+
+def test_renderings_are_the_korean_readings_of_one_amount():
+    got = _renderings(Decimal("3112850000000"))
+    assert Decimal("3112850000000") in got      # 그대로
+    assert Decimal("3112800000000") in got      # "3조 1,128억원"
+    assert Decimal("3000000000000") in got      # "3조원"
+
+
+@pytest.mark.parametrize("text", [
+    "정관 제3조 제1항에 따라",
+    "발행주식수는 10만 주입니다",
+    "임직원은 약 3만 명입니다",
+    "제55기 정기주주총회",
+])
+def test_counting_words_and_ordinals_are_not_amounts(text):
+    assert korean_amounts(text) == set()
+
+
+def test_a_sentence_boundary_does_not_join_two_amounts():
+    assert korean_amounts("총자산은 5조. 3천억은 부채다") == {
+        5_000_000_000_000, 300_000_000_000}
+
+
+def test_an_enumeration_keeps_each_amount_separate():
+    assert korean_amounts("매출은 1,234억, 5,678억, 9,012억원이다") == {
+        123_400_000_000, 567_800_000_000, 901_200_000_000}
+
+
+def test_a_year_after_an_amount_is_not_part_of_it():
+    assert korean_amounts("2024년 1,000억 2025년 2,000억 증가") == {
+        100_000_000_000, 200_000_000_000}
+
+
+# ------------------------------------------------------- 단위 표기 지표 (재정의)
+
+def test_a_unit_must_be_attached_to_the_value():
+    """본문 아무 데나 있는 글자를 세면 지표가 아무것도 못 거른다 —
+    실측 272건 중 266건(97.8%)이 통과했다."""
+    assert unit_stated("2024년 매출은 3,112,850 입니다.") == 0
+    assert unit_stated("주주총회에서 1,234,567 를 의결했습니다.") == 0
+    assert unit_stated("천안 공장의 생산능력은 1,234,567 입니다.") == 0
+
+
+def test_a_date_is_skipped_before_judging_the_first_real_value():
+    assert unit_stated("2024년 매출은 3조 1,128억원입니다.") == 1
+    assert unit_stated("제55기 정기주주총회입니다.") is None

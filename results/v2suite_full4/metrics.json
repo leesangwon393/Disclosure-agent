@@ -1,0 +1,150 @@
+{
+  "mode": "full",
+  "n": 296,
+  "labels": {
+    "정답": 193,
+    "답변실패": 51,
+    "검색실패": 18,
+    "거부(검색실패)": 5,
+    "거부(근거있음)": 9,
+    "채점불가": 20
+  },
+  "label_rate": {
+    "정답": 0.652,
+    "답변실패": 0.1723,
+    "검색실패": 0.0608,
+    "거부(검색실패)": 0.0169,
+    "거부(근거있음)": 0.0304,
+    "채점불가": 0.0676
+  },
+  "latency_mean_sec": 12.04,
+  "latency_p95_sec": 33.27,
+  "latency_max_sec": 76.12,
+  "latency_breakdown": {
+    "bm25": {
+      "median_ms": 45.4,
+      "mean_ms": 197.7,
+      "max_ms": 22854.4,
+      "n": 296
+    },
+    "dense": {
+      "median_ms": 118.1,
+      "mean_ms": 175.9,
+      "max_ms": 4026.8,
+      "n": 296
+    },
+    "expand": {
+      "median_ms": 0.1,
+      "mean_ms": 2.1,
+      "max_ms": 25.0,
+      "n": 296
+    },
+    "facts": {
+      "median_ms": 5.6,
+      "mean_ms": 75.4,
+      "max_ms": 2070.9,
+      "n": 296
+    },
+    "fusion": {
+      "median_ms": 0.0,
+      "mean_ms": 0.1,
+      "max_ms": 0.3,
+      "n": 296
+    },
+    "hcx": {
+      "median_ms": 5171.8,
+      "mean_ms": 8596.8,
+      "max_ms": 72805.5,
+      "n": 291
+    },
+    "other": {
+      "median_ms": 0.0,
+      "mean_ms": 7.4,
+      "max_ms": 1641.4,
+      "n": 296
+    },
+    "process": {
+      "median_ms": 0.2,
+      "mean_ms": 0.3,
+      "max_ms": 1.5,
+      "n": 296
+    },
+    "rerank": {
+      "median_ms": 2441.5,
+      "mean_ms": 2738.7,
+      "max_ms": 9805.4,
+      "n": 296
+    },
+    "sparse": {
+      "median_ms": 441.3,
+      "mean_ms": 471.4,
+      "max_ms": 1715.1,
+      "n": 296
+    },
+    "total": {
+      "median_ms": 9866.5,
+      "mean_ms": 12048.7,
+      "max_ms": 76114.4,
+      "n": 296
+    }
+  },
+  "answer_hit": 0.2128,
+  "evidence_hit": 0.8547,
+  "refusal": 0.0845,
+  "numbers_grounded": 0.9054,
+  "has_citation": 0.7905,
+  "validation_passed": 0.7162,
+  "answer_hit_exact": 0.1723,
+  "graded_hit": 0.6993,
+  "graded_hit_n": 276,
+  "ungradeable_n": 20,
+  "answer_hit_given_evidence": 0.2213,
+  "field_coverage": 0.7239,
+  "field_coverage_n": 204,
+  "silent_omission_rate": 0.2756,
+  "silent_omission_rate_n": 204,
+  "citation_recall": 0.6032,
+  "citation_recall_n": 296,
+  "citation_precision": 0.6288,
+  "citation_precision_n": 234,
+  "required_coverage": 0.7544,
+  "required_coverage_n": 87,
+  "by_doc_group": {
+    "exchange": {
+      "n": 169,
+      "answer_hit": 0.1243,
+      "evidence_hit": 0.8284,
+      "refusal": 0.1006,
+      "numbers_grounded": 0.8935,
+      "has_citation": 0.7633,
+      "validation_passed": 0.6746,
+      "answer_hit_exact": 0.1124,
+      "graded_hit": 0.7879,
+      "gradeable_n": 165
+    },
+    "major": {
+      "n": 87,
+      "answer_hit": 0.2989,
+      "evidence_hit": 0.931,
+      "refusal": 0.023,
+      "numbers_grounded": 0.931,
+      "has_citation": 0.8046,
+      "validation_passed": 0.7586,
+      "answer_hit_exact": 0.2759,
+      "graded_hit": 0.662,
+      "gradeable_n": 71
+    },
+    "periodic": {
+      "n": 40,
+      "answer_hit": 0.4,
+      "evidence_hit": 0.8,
+      "refusal": 0.15,
+      "numbers_grounded": 0.9,
+      "has_citation": 0.875,
+      "validation_passed": 0.8,
+      "answer_hit_exact": 0.2,
+      "graded_hit": 0.4,
+      "gradeable_n": 40
+    }
+  }
+}
