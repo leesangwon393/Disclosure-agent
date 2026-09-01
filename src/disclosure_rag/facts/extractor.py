@@ -239,14 +239,24 @@ _COMPOUND_UNIT = re.compile(r"([\d,]+(?:\.\d+)?)\s*(조|억|만|천)")
 _COMPOUND_OK = re.compile(r"^-?(?:[\d,]+(?:\.\d+)?\s*(?:조|억|만|천)\s*)+[\d,]*\s*원?$")
 
 
+# 회계 괄호 음수. `(4,935,379)` 는 -4,935,379 다. 예전에는 정기공시
+# 경로에서만 처리해, 서식공시(주요사항·거래소·대량보유)에서는 부호를
+# 통째로 잃었다(2026-09-01 발견). 괄호 안이 **수치일 때만** 뗀다 —
+# `(주1)` `(단위: 백만원)` 같은 것은 건드리지 않는다.
+_PAREN_NEGATIVE = re.compile(r"^\(\s*([\d,]+(?:\.\d+)?)\s*\)$")
+
+
 def _strip_accounting_marks(text: str) -> tuple[str, bool]:
-    """세모 부호와 주석 표시를 떼어내고 음수 여부를 돌려준다."""
+    """세모 부호·괄호 음수·주석 표시를 떼어내고 음수 여부를 돌려준다."""
     t = text.strip()
     negative = False
     while t[:1] in _MINUS_MARKS:
         negative = True
         t = t[1:].strip()
     t = _FOOTNOTE_TAIL.sub("", t).strip()
+    m = _PAREN_NEGATIVE.match(t)
+    if m:
+        return m.group(1), True
     return t, negative
 
 

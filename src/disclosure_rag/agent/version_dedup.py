@@ -38,6 +38,8 @@ DART 는 정정할 때 **새 문서를 발행한다**. 원본과 정정본이 �
 
 from __future__ import annotations
 
+import re
+
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
 
@@ -69,21 +71,40 @@ def _group_key(chunk: Any) -> str | None:
     return gid or None
 
 
-def _order(chunk: Any) -> int:
-    """정정 체인 안에서의 순서.
+def _order(chunk: Any) -> tuple[int, int]:
+    """정정 체인 안에서의 순서. `(있는 척도, 값)` 으로 돌려준다.
 
     `correction_order` 가 없으면 **접수일**로 대신한다. Facts(sqlite) 행에는
     그 컬럼이 아예 없어서, 예전에는 전부 0 이 되어 "가장 최신을 남긴다" 는
     대비책이 사실상 아무거나 남기고 있었다(2026-09-01 발견).
+
+    두 척도를 **같은 정수 축에서 견주면 안 된다.** `correction_order=2` 와
+    `filing_date=20240508` 을 나란히 비교하면 접수일 쪽이 무조건 이긴다.
+    척도를 앞자리에 두어 같은 척도끼리만 견주게 하고, 정정 순서가 있는 쪽을
+    더 믿는다.
     """
     o = _attr(chunk, "correction_order")
     if o is not None:
         try:
-            return int(o)
+            return (1, int(o))
         except (TypeError, ValueError):
             pass
     filing = str(_attr(chunk, "filing_date") or "")
-    return int(filing) if filing.isdigit() else 0
+    return (0, int(filing) if filing.isdigit() else 0)
+
+
+_WINDOW_YM = re.compile(r"(20\d{2})\D{0,3}(\d{1,2})?")
+
+
+def _normalize_window(want: str) -> str:
+    """`2024년 05월` `2024-05` -> `2024-05`, `2024년` -> `2024`. 못 읽으면 빈 값."""
+    m = _WINDOW_YM.search(want or "")
+    if not m:
+        return ""
+    year, month = m.group(1), m.group(2)
+    if month and 1 <= int(month) <= 12:
+        return f"{year}-{int(month):02d}"
+    return year
 
 
 def _in_window(chunk: Any, periods: Sequence[str] | None) -> bool:
@@ -93,7 +114,11 @@ def _in_window(chunk: Any, periods: Sequence[str] | None) -> bool:
     filing = str(_attr(chunk, "filing_date") or "")
     period = str(_attr(chunk, "period") or "")
     for want in periods:
-        want = str(want)
+        # 정규화 안 된 토큰("2024년", "2024년 1분기")이 들어오면 예전에는
+        # 전부 창 밖으로 판정돼 조용히 폴백했다. 숫자만 남겨 다시 본다.
+        want = _normalize_window(str(want))
+        if not want:
+            continue
         if len(want) >= 7:                      # YYYY-MM
             head = want[:4] + want[5:7]         # YYYYMM
             if filing.startswith(head) or period.startswith(want):

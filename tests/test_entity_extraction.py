@@ -161,3 +161,52 @@ def test_an_overseas_affiliate_is_a_different_company(extractor, query, wrong):
 def test_ordinary_words_after_a_company_name_are_not_blocked(extractor, query, expected):
     """목록에 없는 말(사업보고서·매출액·연도)은 그대로 통과해야 한다."""
     assert extractor.extract(query).companies == expected
+
+
+# ------------------------------------------- 지명은 그 자체로 다른 회사가 아니다
+#
+# 2026-09-01 교차 검수: 지명으로 시작하기만 하면 무조건 다른 회사로 봐서,
+# 유니버스 76개 이름 **전부** 가 "{회사} 유럽 매출액은?" 에서 사라졌다.
+# 회사명이 없으니 되묻기로 끝난다 — 정상 질문에 답을 못 하는 쪽이 더 나쁘다.
+
+@pytest.mark.parametrize("query, expected", [
+    ("삼성전자 유럽 매출액은 얼마인가?", ["삼성전자"]),
+    ("현대자동차 베트남 공장 투자금액은?", ["현대자동차"]),
+    ("삼성전자 유럽시장 매출은?", ["삼성전자"]),
+    ("현대자동차 차이나 사업 실적은?", ["현대자동차"]),
+])
+def test_a_place_name_modifying_the_next_word_keeps_the_company(extractor, query, expected):
+    assert extractor.extract(query).companies == expected
+
+
+@pytest.mark.parametrize("query, wrong", [
+    ("삼성전자 아메리카의 매출은?", "삼성전자"),
+    ("삼성전자 유럽법인의 매출은?", "삼성전자"),
+    ("현대자동차 베트남법인 실적", "현대자동차"),
+])
+def test_a_place_name_acting_as_the_subject_is_a_different_company(extractor, query, wrong):
+    """`아메리카의` 처럼 지명이 조사를 달고 주어 노릇을 하면 그건 현지법인이다."""
+    assert wrong not in extractor.extract(query).companies
+
+
+# --------------------------------------------------- 연도와 분기는 한 덩어리다
+#
+# 쪼개면 `normalize_period_tokens` 가 토큰마다 따로 해석해 "1분기" 를 버리고
+# 연도만 남긴다 — 분기 필터가 통째로 풀린다(2026-09-01 발견).
+
+@pytest.mark.parametrize("query, expected", [
+    ("삼성전자의 2024년 1분기 매출액은?", ["2024년 1분기"]),
+    ("삼성전자의 2024년 3분기 영업이익은?", ["2024년 3분기"]),
+    ("삼성전자의 2024년 상반기 매출액은?", ["2024년 상반기"]),
+    ("삼성전자의 2024년도 1분기 매출은?", ["2024년도 1분기"]),
+    ("삼성전자의 2024년 05월 공시는?", ["2024년 05월"]),
+    ("삼성전자의 2024년 매출액은?", ["2024년"]),
+])
+def test_a_year_and_its_quarter_stay_one_token(extractor, query, expected):
+    assert extractor.extract(query).period == expected
+
+
+def test_the_quarter_survives_normalization():
+    from disclosure_rag.retrieval.metadata_filter import normalize_period_tokens
+    assert normalize_period_tokens(["2024년 1분기"]) == ["2024-03"]
+    assert normalize_period_tokens(["2024년 3분기"]) == ["2024-09"]

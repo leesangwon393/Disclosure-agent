@@ -218,6 +218,8 @@ class FactStore:
         if order_by not in ("date", "value_desc", "value_asc"):
             raise ValueError(f"order_by 는 date|value_desc|value_asc 여야 합니다: {order_by!r}")
         where, params = [], []
+        narrow: tuple = ("", [])
+        period_clauses: list = []
         if company:
             where.append("company = ?"); params.append(company)
         if companies:
@@ -231,15 +233,29 @@ class FactStore:
             # event 공시(exchange/major/holding)는 metadata_filter와 똑같이
             # filing_date 연도로 fallback한다.
             if len(period) == 4 and period.isdigit():
-                where.append(
-                    "(period LIKE ? OR ((period IS NULL OR period = '') AND filing_date LIKE ?))"
-                )
-                params.extend([period + "-%", period + "%"])
+                period_clauses = [(
+                    "(period LIKE ? OR ((period IS NULL OR period = '')"
+                    " AND filing_date LIKE ?))",
+                    [period + "-%", period + "%"],
+                )]
             else:
-                where.append(
-                    "(period = ? OR ((period IS NULL OR period = '') AND filing_date LIKE ?))"
-                )
-                params.extend([period, period[:4] + "%"])
+                # `2024-05` 를 물었는데 곧바로 `filing_date LIKE '2024%'` 로
+                # 넓히면 1년치가 전부 근거로 들어온다(실측: 현대건설
+                # 4문서 -> 29문서). 그래서 **그 달로 먼저 찾고, 아무것도
+                # 없을 때만** 그 해로 넓힌다. 기준기간이 없는 event 공시는
+                # 접수 시점이 기준 시점과 어긋날 수 있어 폴백이 필요하다
+                # (2026-09-01).
+                clause = ("(period = ? OR ((period IS NULL OR period = '')"
+                          " AND filing_date LIKE ?))")
+                if len(period) == 7:
+                    narrow = (clause, [period, period.replace("-", "") + "%"])
+                    wide = (clause, [period, period[:4] + "%"])
+                else:
+                    narrow = wide = (clause, [period, period[:4] + "%"])
+                # 기간 절은 `where` 에 바로 넣지 않는다. 좁은 것과 넓은 것을
+                # 갈아 끼워야 하는데, 다른 조건이 뒤에 더 붙으면 자리 계산이
+                # 어긋난다. `_run` 이 **맨 뒤에** 붙인다.
+                period_clauses = [narrow] if narrow == wide else [narrow, wide]
         if date_from:
             where.append("filing_date >= ?"); params.append(date_from)
         if date_to:
@@ -294,9 +310,14 @@ class FactStore:
             where.append(third_party)
             params.extend(owner_params)
 
-        def _run(key_clause: str | None, key_params: list) -> list[dict]:
+        def _run(key_clause: str | None, key_params: list,
+                 period_clause=None) -> list[dict]:
             w = list(where) + ([key_clause] if key_clause else [])
             p = list(params) + key_params
+            if period_clauses:
+                clause, clause_params = period_clause or period_clauses[0]
+                w.append(clause)
+                p.extend(clause_params)
             sql = "SELECT * FROM facts"
             if w:
                 sql += " WHERE " + " AND ".join(w)
@@ -313,16 +334,23 @@ class FactStore:
             rows = self.conn.execute(sql, p + [limit]).fetchall()
             return [self._annotate_owner(self._row(r)) for r in rows]
 
+        def _search(key_clause: str | None, key_params: list) -> list[dict]:
+            """좁은 기간으로 먼저 찾고, 비면 넓은 기간으로 한 번 더."""
+            rows = _run(key_clause, key_params)
+            if rows or len(period_clauses) < 2:
+                return rows
+            return _run(key_clause, key_params, period_clause=period_clauses[1])
+
         if not key:
-            return _run(None, [])
-        exact = _run("key_norm = ?", [key])
+            return _search(None, [])
+        exact = _search("key_norm = ?", [key])
         if exact or exact_only:
             # exact_only 는 MultiFactStore 용이다. 저장소가 여러 개일 때
             # 각자 알아서 부분일치로 넓히면, 한쪽에 정확히 일치하는 값이
             # 있는데도 다른 쪽의 엉뚱한 부분일치가 섞여 들어온다.
             # 정확일치를 **모든 저장소에서 먼저** 시도할 수 있게 열어둔다.
             return exact
-        return _run("(key_norm LIKE ? OR key LIKE ?)", [f"%{key}%", f"%{key}%"])
+        return _search("(key_norm LIKE ? OR key LIKE ?)", [f"%{key}%", f"%{key}%"])
 
     def distinct_keys(self, *, company: str | None = None, doc_group: str | None = None,
                       limit: int = 100) -> list[tuple[str, int]]:

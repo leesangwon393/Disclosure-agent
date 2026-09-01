@@ -4,20 +4,25 @@
 
 ---
 
-## ① 먼저 KIM 이 터미널에서 해야 하는 것 — 딱 두 줄
+## ① 먼저 KIM 이 터미널에서 해야 하는 것 — 딱 세 줄
 
-샌드박스에서는 `.git` 안의 잠금 파일을 지울 권한이 없어 **마지막 커밋만
-실패했다.** 코드는 전부 저장돼 있고 `git add` 까지 끝나 있다.
+샌드박스에서는 `.git` 안의 잠금 파일을 지울 권한이 없다. 커밋 하나가
+성공하면 그 잠금 파일이 남아 **그 다음 커밋부터 전부 막힌다.**
+코드는 전부 저장돼 있고 `git add` 까지 끝나 있다.
 
 ```
 cd ~/Desktop/미래에셋/pipeline-kim
 rm -f .git/HEAD.lock .git/index.lock
-git commit -F .handoff/commit_msg_A7_A10.txt
+git commit -F .handoff/commit_msg_2차.txt
+```
+
+커밋 객체는 이미 만들어져 있다(`3ae1cee`). 위 명령 대신 아래도 된다.
+
+```
+git update-ref refs/heads/main 3ae1cee
 ```
 
 이걸 안 해도 코드는 안전하다. 커밋만 안 돼 있는 상태다.
-
----
 
 ## ② 지금까지 끝난 것 — PLAN.md 의 A 섹션
 

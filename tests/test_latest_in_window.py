@@ -97,5 +97,24 @@ def test_filing_date_is_used_when_correction_order_is_missing():
     예전에는 전부 0 이 되어 "가장 최신을 남긴다" 는 대비책이 아무거나 남겼다.
     """
     from disclosure_rag.agent.version_dedup import _order
-    assert _order(CHAIN[0]) == 20230626
-    assert _order(CHAIN[-1]) == 20260120
+    assert _order(CHAIN[0]) == (0, 20230626)
+    assert _order(CHAIN[-1]) == (0, 20260120)
+
+
+def test_a_correction_order_is_never_compared_against_a_filing_date():
+    """`correction_order=2` 와 `filing_date=20240508` 을 같은 축에서 견주면
+    접수일 쪽이 무조건 이긴다. 척도를 앞자리에 둬 같은 척도끼리만 견준다."""
+    from disclosure_rag.agent.version_dedup import _order
+    ordered = _order({"correction_order": 2, "filing_date": "20200101"})
+    dated = _order({"filing_date": "20240508"})
+    assert ordered > dated
+
+
+def test_an_unnormalized_period_token_still_finds_its_window():
+    """`2024년 05월` 이 그대로 들어오면 예전에는 전부 창 밖으로 판정됐다."""
+    from disclosure_rag.agent.version_dedup import _in_window
+    chunk = {"filing_date": "20240508", "period": ""}
+    assert _in_window(chunk, ["2024년 05월"])
+    assert _in_window(chunk, ["2024-05"])
+    assert _in_window(chunk, ["2024년"])
+    assert not _in_window(chunk, ["2024년 06월"])

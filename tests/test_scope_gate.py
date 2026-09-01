@@ -1,3 +1,5 @@
+import pytest
+
 from disclosure_rag.agent.query_plan import QueryPlan
 from disclosure_rag.agent.scope_gate import apply_scope_gate, evaluate_scope
 
@@ -189,3 +191,30 @@ def test_no_company_still_asks_for_a_company_first():
     reason = _clarification_reason(QueryPlan(answer_mode="closed", task="lookup"),
                                    "얼마인가?")
     assert reason == "회사명이 필요합니다."
+
+
+# ------------------------------------------------- 되묻기 게이트 존댓말 (2026-09-01)
+#
+# `_ASK_WORDS` 에 `얼마인가` 는 있는데 `얼마인가요` 가 없어, 존댓말로 물으면
+# 규칙이 통째로 비활성화됐다.
+
+@pytest.mark.parametrize("query", [
+    "KB금융은 얼마인가?",
+    "KB금융은 얼마인가요?",
+    "삼성전자는 어떤가요?",
+    "삼성전자는 얼마나 되나요?",
+    "삼성전자 좀 알려주세요",
+])
+def test_the_polite_forms_also_reach_the_clarification_gate(query):
+    from disclosure_rag.agent.scope_gate import _clarification_reason
+    company = "KB금융" if "KB금융" in query else "삼성전자"
+    plan = QueryPlan(companies=[company], answer_mode="closed", task="lookup")
+    reason = _clarification_reason(plan, query)
+    assert reason and "무엇을 묻는지" in reason
+
+
+def test_a_real_item_name_is_never_mistaken_for_a_company():
+    """`매출액은 얼마야?` 의 `매출액` 을 회사 이름으로 잡으면 안 된다.
+    조사를 넓히려다 이걸 깨뜨려 되돌렸다(2026-09-01)."""
+    from disclosure_rag.agent.scope_gate import unknown_subject
+    assert unknown_subject("매출액은 얼마야?", _REG) is None

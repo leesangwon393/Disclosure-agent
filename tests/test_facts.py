@@ -149,3 +149,43 @@ def test_parenthesised_negatives_still_work_in_periodic():
     from disclosure_rag.facts.extractor import parse_periodic_value
     assert parse_periodic_value("(4,935,379)")[0] == -4_935_379
     assert parse_periodic_value("(54,702)")[0] == -54_702
+
+
+# ------------------------------------------------- 회계 괄호 음수 (2026-09-01)
+#
+# `(4,935,379)` 는 -4,935,379 다. 예전에는 정기공시 경로에서만 처리해
+# 서식공시(주요사항·거래소·대량보유)에서는 부호를 통째로 잃었다.
+
+def test_a_parenthesised_number_is_negative_in_every_document_type():
+    from disclosure_rag.facts.extractor import parse_value
+    assert parse_value("(4,935,379)")[0] == -4_935_379
+    assert parse_value("(12.5)")[0] == -12.5
+
+
+def test_parentheses_that_are_not_a_number_are_left_alone():
+    from disclosure_rag.facts.extractor import parse_value
+    assert parse_value("(주1)")[0] is None
+    assert parse_value("(단위: 백만원)")[0] is None
+
+
+# ------------------------------------------- 연·월 조회는 그 달로 좁힌다
+#
+# `2024-05` 를 물었는데 `filing_date LIKE '2024%'` 로 넓히면 1년치가 전부
+# 근거로 들어온다(실측: 현대건설 4문서 -> 29문서).
+
+def test_a_year_month_period_does_not_widen_to_the_whole_year(tmp_path):
+    from disclosure_rag.facts.extractor import Fact
+    from disclosure_rag.facts.store import FactStore
+
+    store = FactStore(str(tmp_path / "facts.sqlite"))
+    store.insert_many([
+        Fact(doc_id=f"d{i}", chunk_id=f"c{i}", company="가", doc_group="exchange",
+             key="계약금액", key_norm="계약금액", value_text="100", value_num=100.0,
+             filing_date=filing, period=None, is_latest=True)
+        for i, filing in enumerate(("20240515", "20240612", "20241120"))
+    ])
+
+    got = {r["filing_date"] for r in store.lookup(company="가", period="2024-05", limit=100)}
+    assert got == {"20240515"}
+    year = {r["filing_date"] for r in store.lookup(company="가", period="2024", limit=100)}
+    assert len(year) == 3

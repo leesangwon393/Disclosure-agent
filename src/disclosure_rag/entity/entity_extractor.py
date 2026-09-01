@@ -24,7 +24,12 @@ _YM = r"20\d{2}[.\-]\s*\d{1,2}\s*월?"
 # "2024년 05월" 형태. _YEAR 보다 **먼저** 와야 "2024년" 으로 잘리지 않는다.
 # 이게 없어서 연·월을 지목한 질문 94건 중 54건이 월 정보를 잃었다(2026-09-01).
 _YM_KO = r"20\d{2}\s*년\s*\d{1,2}\s*월"
-_PERIOD_PAT = re.compile("|".join([_RECENT_N_YEAR, _YM_KO, _YM, _YEAR, _QUARTER, _HALF]))
+# "2024년 1분기" / "2024년 상반기" 는 **한 덩어리**여야 한다. 쪼개면
+# `normalize_period_tokens` 가 토큰마다 따로 해석해 "1분기" 를 버리고
+# 연도만 남긴다 — 분기 필터가 통째로 풀린다(2026-09-01 발견).
+_Y_QUARTER = r"20\d{2}\s*년\s*(?:도\s*)?(?:[1-4]\s*분기|상반기|하반기)"
+_PERIOD_PAT = re.compile("|".join(
+    [_RECENT_N_YEAR, _Y_QUARTER, _YM_KO, _YM, _YEAR, _QUARTER, _HALF]))
 
 _CORRECTION_KEYWORDS = ("기재정정", "정정공시", "정정")
 
@@ -61,10 +66,16 @@ _FOREIGN_SUFFIX_EN = frozenset({
     "TURKEY", "RUSSIA", "EGYPT", "TUNISIA", "SLOVAKIA", "CZECH",
     "GMBH", "BV", "NV", "SA", "SAS", "SRL", "SDN", "BHD", "PTE", "PVT", "LLC", "LLP",
 })
-_FOREIGN_SUFFIX_KO = (
-    "유한공사", "유한책임회사", "현지법인", "해외법인",
-    "아메리카", "유럽", "차이나", "재팬", "베트남", "인디아",
-)
+# 이 말 자체가 해외 법인 표시다.
+_FOREIGN_ENTITY_KO = ("유한공사", "유한책임회사", "현지법인", "해외법인")
+# 지명은 그 자체로는 못 가른다.
+#   "삼성전자 아메리카의 매출"      -> 아메리카가 주어  -> 다른 회사
+#   "LG에너지솔루션 유럽 매출액"    -> 유럽이 매출액을 꾸민다 -> 같은 회사
+# 예전에는 지명으로 시작하기만 하면 무조건 다른 회사로 봐서, 유니버스 76개
+# 이름 **전부** 가 "{회사} 유럽 매출액은?" 에서 사라졌다. 회사명이 없으니
+# 되묻기로 끝난다 — 정상 질문에 답을 못 하는 쪽이 훨씬 나쁘다(2026-09-01).
+_FOREIGN_REGION_KO = ("아메리카", "유럽", "차이나", "재팬", "베트남", "인디아",
+                      "인도네시아", "멕시코", "브라질", "폴란드", "헝가리")
 _NEXT_EN = re.compile(r"\s+([A-Za-z][A-Za-z.]*)")
 _NEXT_KO = re.compile(r"\s+([가-힣]+)")
 
@@ -75,8 +86,22 @@ def _foreign_affiliate_follows(tail: str) -> bool:
     if m and m.group(1).upper().replace(".", "") in _FOREIGN_SUFFIX_EN:
         return True
     m = _NEXT_KO.match(tail)
-    if m and any(m.group(1).startswith(k) for k in _FOREIGN_SUFFIX_KO):
+    if not m:
+        return False
+    word = m.group(1)
+    if any(word.startswith(k) for k in _FOREIGN_ENTITY_KO):
         return True
+    for region in _FOREIGN_REGION_KO:
+        if not word.startswith(region):
+            continue
+        rest = word[len(region):]
+        if not rest:
+            return False                       # "유럽 매출액" — 뒤 낱말을 꾸민다
+        if rest.startswith(("법인", "현지법인", "지사")):
+            return True                        # "유럽법인"
+        if rest in _COMPANY_TAILS:
+            return True                        # "아메리카의", "차이나는"
+        return False                           # "유럽시장", "베트남산"
     return False
 
 _REPORT_NAME_TERMS = [
