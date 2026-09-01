@@ -136,8 +136,22 @@ class Fact(BaseModel):
 
 
 # 표 안에 이 항목이 있으면, 그 표의 수치는 **그 이름의 법인 것**이다.
-# (「VII. 주주에 관한 사항」의 최대주주 및 특수관계인 현황 표)
-OWNER_NAME_KEYS = ("법인 또는 단체의 명칭", "법인또는단체의명칭", "법인명", "단체의 명칭")
+# (「VII. 주주에 관한 사항」의 최대주주의 개요 표)
+#
+# '성명' 은 일부러 넣지 않았다. 「VIII. 임원 및 직원 등에 관한 사항」의 임원
+# 보수 표에도 성명이 있어서, 넣으면 임원 보수가 '남의 값'으로 분류되어
+# "삼성전자 임원 보수는?" 이 막힌다. 최대주주가 개인이면 애초에 재무현황 표를
+# 내지 않으므로(개인은 재무제표 제출 대상이 아니다) 실익도 없다.
+# 우리 코퍼스 70개사에는 개인 최대주주 사례가 0건이다(2026-09-01 확인).
+OWNER_NAME_KEYS = ("법인 또는 단체의 명칭", "법인또는단체의명칭")
+
+# 「최대주주의 개요」 뒤에 이름 없이 따라붙는 요약재무정보 표를 알아보는 표지.
+# 이 중 둘 이상이 한 표에 있으면 재무제표 표로 본다.
+_FINANCIAL_KEYS = (
+    "자산총계", "부채총계", "자본총계", "매출액", "영업이익", "당기순이익",
+    "유동자산", "비유동자산", "유동부채", "비유동부채", "자본금", "이익잉여금",
+    "부채와자본총계", "영업수익",
+)
 
 
 def _table_owner(kv) -> str | None:
@@ -154,6 +168,37 @@ def _table_owner(kv) -> str | None:
             if value and value not in _EMPTY_VALUES:
                 return value
     return None
+
+
+def _looks_like_financial_statement(kv) -> bool:
+    """이름은 없지만 재무제표로 보이는 표인가.
+
+    실제 문서(SK하이닉스 반기보고서)를 열어 확인한 형태:
+
+        표1  법인 또는 단체의 명칭 = SK스퀘어 주식회사   ← 이름 있음
+        표2  법인 또는 단체의 명칭 = SK주식회사         ← 이름 있음
+        표3  구 분 = 제33기 반기 / [유동자산] ... 자산총계 199,360,274
+        표4  구 분 = 제33기 반기 / ... (별도재무제표)
+
+    표3·표4 는 표2(SK주식회사)의 상세 재무제표인데 **이름을 다시 적지 않는다.**
+    사람이 읽으면 "위에서 말한 그 회사"인 게 당연하기 때문이다. 표3 의
+    자산총계가 표2 와 정확히 같은 값인 것으로 확인했다.
+
+    조건을 재무 항목 2개 이상으로 둔 이유: 임원 보수·주식 소유현황처럼 이름
+    없는 표는 많은데, 그런 표에는 자산총계·부채총계가 같이 나오지 않는다.
+    """
+    hits = 0
+    seen: set[str] = set()
+    for pair in kv.pairs:
+        key = (pair.key or "").strip().replace(" ", "").strip("[]")
+        for marker in _FINANCIAL_KEYS:
+            if marker in key and marker not in seen:
+                seen.add(marker)
+                hits += 1
+                break
+        if hits >= 2:
+            return True
+    return False
 
 
 def normalize_key(key: str) -> tuple[str, str | None]:
@@ -288,10 +333,25 @@ def extract_facts(
 ) -> list[Fact]:
     """ParsedDocument 하나에서 fact 행들을 뽑는다 (chunk_id 는 아직 비어 있음)."""
     facts: list[Fact] = []
+    # 절이 바뀌면 초기화한다. 「주주에 관한 사항」에서 본 이름이 「임원 및
+    # 직원」까지 따라가면 안 된다.
+    carried_owner: str | None = None
+    carried_section: tuple[str, ...] | None = None
+
     for section, kv in _iter_kv(parsed.sections):
+        section_key = tuple(section.path)
+        if section_key != carried_section:
+            carried_owner, carried_section = None, section_key
+
         # 표 하나를 통째로 보고 주인을 먼저 정한다. 행 단위로는 알 수 없다 —
         # 주인 이름은 표의 다른 행에 적혀 있기 때문이다.
         table_owner = _table_owner(kv)
+        if table_owner:
+            carried_owner = table_owner
+        elif carried_owner and _looks_like_financial_statement(kv):
+            # 이름 없이 따라붙은 재무제표 표 — 바로 앞에서 본 주인의 것이다.
+            table_owner = carried_owner
+
         for pair in kv.pairs:
             raw_key, raw_val = (pair.key or "").strip(), (pair.value or "").strip()
             if not raw_key or raw_val in _EMPTY_VALUES:

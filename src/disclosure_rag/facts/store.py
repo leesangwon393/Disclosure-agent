@@ -122,14 +122,27 @@ class FactStore:
         cached = getattr(self, "_owner_by_chunk", None)
         if cached is None:
             cached = {}
-            try:
-                for row in self.conn.execute(
-                        "SELECT chunk_id, value_text FROM facts WHERE key = ?",
-                        (OWNER_NAME_KEY,)):
-                    if row["chunk_id"] and row["value_text"]:
-                        cached.setdefault(row["chunk_id"], row["value_text"])
-            except sqlite3.Error:  # 스키마가 다른 오래된 저장소
-                cached = {}
+            # 새 저장소: 추출할 때 표에서 확인해 둔 주인을 그대로 쓴다.
+            # 이름 없이 이어지는 요약재무정보 표까지 포함되므로 더 넓다.
+            if "value_owner" in self.columns:
+                try:
+                    for row in self.conn.execute(
+                            "SELECT chunk_id, value_owner FROM facts "
+                            "WHERE value_owner IS NOT NULL"):
+                        if row["chunk_id"] and row["value_owner"]:
+                            cached.setdefault(row["chunk_id"], row["value_owner"])
+                except sqlite3.Error:
+                    cached = {}
+            if not cached:
+                # 구버전 저장소: 표에 적힌 이름 행을 직접 읽는다.
+                try:
+                    for row in self.conn.execute(
+                            "SELECT chunk_id, value_text FROM facts WHERE key = ?",
+                            (OWNER_NAME_KEY,)):
+                        if row["chunk_id"] and row["value_text"]:
+                            cached.setdefault(row["chunk_id"], row["value_text"])
+                except sqlite3.Error:
+                    cached = {}
             self._owner_by_chunk = cached
         return cached
 

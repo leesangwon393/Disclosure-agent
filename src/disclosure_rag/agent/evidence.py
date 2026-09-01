@@ -112,18 +112,26 @@ def _fact_owner(row: dict) -> str:
     return company or (owner or "?")
 
 
-def third_party_note(section_path) -> str:
-    """이 근거의 수치가 그 회사 것이 아닐 수 있으면 한 줄 경고를 만든다."""
+def third_party_note(section_path, owner: str | None = None, company: str | None = None) -> str:
+    """이 근거의 수치가 그 회사 것이 아니면 한 줄로 알려준다.
+
+    `owner` 가 있으면 **실제 주인 이름**을 적는다. 수치사전에 그 조각의 표
+    주인이 기록돼 있으면 거기서 온다. 이름을 알면 두 가지가 동시에 된다 —
+    그 회사 값으로 잘못 쓰는 것을 막고, "최대주주의 매출액은?" 에는 답한다.
+    """
+    if owner and owner != company:
+        return (f"⚠ 이 표의 수치는 **{owner}의 것**이다({company} 공시에 실린 제3자 "
+                f"수치). {company} 값으로 쓰면 안 된다.\n")
     joined = " > ".join(str(part) for part in (section_path or []))
     if any(marker in joined for marker in _THIRD_PARTY_SECTIONS):
         return ("⚠ 주의: 이 절의 재무수치는 **이 회사가 아니라 최대주주·출자대상 등 "
-                "다른 법인의 것**이다. 이 회사 값으로 쓰면 안 된다.\n")
+                "다른 법인의 것**일 수 있다. 이 회사 값으로 쓰면 안 된다.\n")
     return ""
 
 
 def _evidence_block(idx: int, *, company, report_name, filing_date, period,
                     section_path, is_correction, is_latest, text,
-                    report_id, chunk_id) -> str:
+                    report_id, chunk_id, owner: str | None = None) -> str:
     status = "정정본" if is_correction else "원본"
     if is_latest:
         status += " (최신)"
@@ -135,7 +143,7 @@ def _evidence_block(idx: int, *, company, report_name, filing_date, period,
         f"기간: {period}\n"
         f"Section: {' > '.join(section_path or [])}\n"
         f"정정 상태: {status}\n"
-        f"{third_party_note(section_path)}"
+        f"{third_party_note(section_path, owner, company)}"
         f"내용:\n{text}\n"
         f"report_id: {report_id}\n"
         f"chunk_id: {chunk_id}\n"
@@ -181,6 +189,7 @@ def _mark_aggregate(fact_rows: list[dict], aggregation: str) -> list[str]:
 def build_evidence_pack_from_retrieval(
     question: str, chunks_with_scores, *, facts=(), aggregation: str = "none",
     max_chars: int | None = None, scope_note: str = "",
+    chunk_owners: dict | None = None,
 ) -> EvidencePack:
     """검색 결과에서 Evidence Pack 을 만든다.
 
@@ -218,6 +227,7 @@ def build_evidence_pack_from_retrieval(
             text=getattr(chunk, "raw_text", None) or getattr(chunk, "text", "") or "",
             report_id=getattr(chunk, "report_id", None),
             chunk_id=getattr(chunk, "chunk_id", None),
+            owner=(chunk_owners or {}).get(getattr(chunk, "chunk_id", None)),
         )
         if max_chars is not None and used + len(block) > max_chars and citations:
             truncated = len(chunks_with_scores) - idx + 1

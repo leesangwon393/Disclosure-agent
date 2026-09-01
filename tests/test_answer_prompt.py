@@ -207,3 +207,24 @@ def test_prompt_forbids_taking_a_value_from_another_companys_document():
     text = build_answer_prompt(QueryPlan(answer_mode="closed", task="compare"))
     assert "회사:" in text
     assert "최대주주" in text
+
+
+def test_evidence_block_names_the_real_owner_when_known():
+    """근거 블록이 '누구 수치인지' 를 이름으로 말해야 한다.
+
+    절 이름만 보고 "다른 법인의 것일 수 있다" 고 하면 모델은 그 근거를 아예
+    버린다. 이름을 알려주면 잘못 쓰는 것도 막고 "최대주주의 매출액은?" 에는
+    답할 수 있다.
+    """
+    from disclosure_rag.agent.evidence import third_party_note
+
+    named = third_party_note(["VII. 주주에 관한 사항"], "국민연금공단", "KB금융")
+    assert "국민연금공단" in named and "KB금융" in named
+
+    # 이름을 모르면 절 기준 경고로 물러선다
+    fallback = third_party_note(["VII. 주주에 관한 사항"])
+    assert "최대주주" in fallback
+
+    # 그 회사 자신의 수치면 아무 말도 붙이지 않는다
+    assert third_party_note(["III. 재무에 관한 사항"]) == ""
+    assert third_party_note(["VII. 주주에 관한 사항"], "KB금융", "KB금융") != named

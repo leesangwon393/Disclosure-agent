@@ -198,6 +198,21 @@ class DualChannelRetriever:
         kept, _report = deduplicate_versions(rows, plan.latest_policy)
         return kept
 
+    @property
+    def chunk_owners(self) -> dict:
+        """조각 번호 -> 그 표의 수치 주인.
+
+        수치사전이 표에서 확인해 둔 것을 비정형 근거에도 그대로 쓴다. 같은
+        조각을 가리키므로 다시 계산할 필요가 없고, 재임베딩도 필요 없다.
+        """
+        store = self.fact_store
+        if store is None:
+            return {}
+        try:
+            return store.owner_by_chunk
+        except Exception:  # noqa: BLE001
+            return {}
+
     def _correction_rows(self, plan: QueryPlan) -> list[dict]:
         if not self.correction_index or not self.manifest or not plan.companies:
             return []

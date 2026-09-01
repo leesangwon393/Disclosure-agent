@@ -158,3 +158,52 @@ def test_an_old_store_without_the_column_still_works_and_is_never_written_to(tmp
     check = sqlite3.connect(path)
     assert "value_owner" not in {r[1] for r in check.execute("PRAGMA table_info(facts)")}
     check.close()
+
+
+# --------------------------------------------------------------------------- 이름 이어받기
+
+def test_a_financial_table_that_follows_a_named_one_inherits_the_owner():
+    """이름 없이 따라붙는 요약재무정보 표는 **앞 표의 주인** 것이다.
+
+    실제 문서(SK하이닉스 반기보고서)에서 확인한 형태:
+        표1  법인 또는 단체의 명칭 = SK스퀘어 주식회사
+        표2  법인 또는 단체의 명칭 = SK주식회사
+        표3  구 분 = 제33기 반기 / [유동자산]... 자산총계 199,360,274   ← 이름 없음
+        표4  구 분 = 제33기 반기 / ... (별도재무제표)                  ← 이름 없음
+    표3 의 자산총계는 표2 와 정확히 같은 값이다. 사람이 읽으면 "위에서 말한 그
+    회사"인 게 당연해서 이름을 다시 안 적은 것이다. 이어받지 않으면 이 값들이
+    SK하이닉스 것으로 저장된다.
+    """
+    from disclosure_rag.facts.extractor import _looks_like_financial_statement, _table_owner
+
+    class _Pair:
+        def __init__(self, key, value):
+            self.key, self.value = key, value
+            self.unit_value = self.field_code = self.unit_code = None
+
+    class _KV:
+        def __init__(self, pairs):
+            self.pairs = [_Pair(k, v) for k, v in pairs]
+            self.group_label = None
+
+    named = _KV([("법인 또는 단체의 명칭", "SK주식회사"), ("자산총계", "199,360,274")])
+    follow = _KV([("구 분", "제33기 반기"), ("[유동자산]", "66,289,793"),
+                  ("자산총계", "199,360,274"), ("부채총계", "123,851,358")])
+    unrelated = _KV([("성명", "홍길동"), ("보수총액", "1,200")])
+
+    assert _table_owner(named) == "SK주식회사"
+    assert _table_owner(follow) is None
+    assert _looks_like_financial_statement(follow) is True
+    # 임원 보수 표는 재무제표가 아니다 — 여기까지 이어받으면 "임원 보수" 질문이 막힌다
+    assert _looks_like_financial_statement(unrelated) is False
+
+
+def test_an_executives_name_is_not_treated_as_an_owner():
+    """'성명' 을 주인 표지로 쓰면 임원 보수가 '남의 값' 이 된다.
+
+    「VIII. 임원 및 직원 등에 관한 사항」에도 성명이 있다. 최대주주가 개인이면
+    애초에 재무현황 표를 내지 않으므로(개인은 재무제표 제출 대상이 아니다)
+    성명을 표지로 쓸 실익도 없다.
+    """
+    from disclosure_rag.facts.extractor import OWNER_NAME_KEYS
+    assert not any("성명" in k for k in OWNER_NAME_KEYS)

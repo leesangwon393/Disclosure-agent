@@ -112,6 +112,17 @@ class MultiFactStore:
             [s.lookup(key=key, limit=limit, order_by=order_by, **kw) for s in self.stores],
             limit, order_by)
 
+    @property
+    def owner_by_chunk(self) -> dict[str, str]:
+        """저장소 여러 개의 '조각 -> 수치 주인' 지도를 합친다."""
+        merged: dict[str, str] = {}
+        for store in self.stores:
+            try:
+                merged.update(store.owner_by_chunk)
+            except Exception:  # noqa: BLE001
+                continue
+        return merged
+
     def distinct_keys(self, *, limit: int = 100, **kw) -> list[tuple[str, int]]:
         """항목별 건수를 저장소끼리 **더해서** 돌려준다."""
         totals: dict[str, int] = {}

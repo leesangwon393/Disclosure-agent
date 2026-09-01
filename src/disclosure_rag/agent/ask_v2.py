@@ -286,6 +286,7 @@ class AskV2:
             aggregation=getattr(plan, "aggregation", "none"),
             max_chars=self.max_evidence_chars,
             scope_note=out.existence.prompt_block(),
+            chunk_owners=getattr(self.dual, "chunk_owners", None),
         )
 
         # --- 14. 답변 생성 ------------------------------------------------
