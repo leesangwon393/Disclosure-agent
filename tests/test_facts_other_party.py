@@ -65,3 +65,13 @@ def test_rows_without_a_section_are_kept(store):
     store.conn.commit()
     rows = store.lookup(company="KB금융", key="계약금액")
     assert [r["value_text"] for r in rows] == ["50억원"]
+
+
+def test_the_shareholders_name_is_still_readable(store):
+    """최대주주 '이름'은 그 회사에 대한 정당한 사실이다 — 같이 날리면 안 된다.
+
+    절을 통째로 막으면 "KB금융의 최대주주는?" 에 Facts 가 빈손이 된다.
+    막을 것은 그 절의 **재무 항목**뿐이다.
+    """
+    rows = store.lookup(company="KB금융", key="법인 또는 단체의 명칭")
+    assert [r["value_text"] for r in rows] == ["국민연금공단"]

@@ -58,6 +58,13 @@ _COLS = [
 ]
 
 
+# 「VII. 주주에 관한 사항」의 '최대주주 및 특수관계인 현황' 표에 실리는 재무 항목.
+# 이 값들의 주인은 보고서를 낸 회사가 아니라 **최대주주 법인**이다.
+OTHER_PARTY_FINANCIAL_KEYS = (
+    "자산총계", "부채총계", "자본총계", "매출액", "영업이익", "당기순이익",
+)
+
+
 class FactStore:
     def __init__(self, path: str | Path):
         self.path = str(path)
@@ -195,8 +202,22 @@ class FactStore:
             #
             # [FACT] 블록은 '공시 표에서 직접 뽑은 확정값'으로 제시되므로
             # 모델이 의심 없이 쓴다. 비정형 근거보다 더 위험하다.
-            where.append("(section_path IS NULL OR section_path NOT LIKE ?)")
+            # 섹션 전체가 아니라 **재무 항목만** 막는다. 같은 절에는
+            # '법인 또는 단체의 명칭'(= 최대주주 이름), 소유주식수, 지분율처럼
+            # 그 회사에 대한 정당한 사실도 들어 있다. 섹션을 통째로 날리면
+            # "KB금융의 최대주주는?" 에 Facts 가 빈손이 된다.
+            #
+            # 실측으로 확인한 것(2026-09-01): 이 절의 재무 항목 6,820행 중
+            # 129행은 '법인 또는 단체의 명칭' 행이 같은 chunk 에서 추출되지
+            # 않았는데, 그 값들도 회사끼리 똑같았다(POSCO홀딩스 영업이익
+            # 7,347 = KB금융 영업이익 7,347). 표지 유무와 무관하게 이 절의
+            # 재무 항목은 전부 남의 것이다.
+            where.append(
+                "(section_path IS NULL OR section_path NOT LIKE ?"
+                f" OR key NOT IN ({','.join('?' * len(OTHER_PARTY_FINANCIAL_KEYS))}))"
+            )
             params.append("%주주에 관한 사항%")
+            params.extend(OTHER_PARTY_FINANCIAL_KEYS)
 
         def _run(key_clause: str | None, key_params: list) -> list[dict]:
             w = list(where) + ([key_clause] if key_clause else [])

@@ -512,6 +512,22 @@ caffeinate -i ./run.sh python3 scripts/score_answers.py --gold eval/suite_v2.jso
 - 실마리: 정답 값은 `요약재무정보` 섹션 청크에 있는데 수치사전(`facts`)에는
   없다. 파서가 그 표를 안 뽑는다. 섹션을 지목해 검색하거나, 수치 추출을
   그 섹션까지 넓히는 두 갈래가 있다.
+- **2026-09-01 추가 — 유력한 원인을 찾았다.** 수치사전에 있던 재무 항목의
+  73.6%(9,262행 중 6,820행)가 「VII. 주주에 관한 사항」의 *최대주주 재무현황*
+  표에서 나온 값이었다. 주인이 그 회사가 아니라 최대주주 법인이다.
+
+  ```
+  KB금융 자산총계 464,418 = 신한지주 = 하나금융지주 = POSCO홀딩스
+  네 회사의 최대주주가 모두 국민연금공단이라 값이 같았다
+  ```
+
+  `FactStore.lookup` 이 기본으로 막는다(2026-09-01). 다만 **막는 것과 맞히는
+  것은 다르다** — 차단 후 자산총계 사실이 남는 회사는 70곳 중 18곳뿐이다.
+  나머지는 애초에 없었고 최대주주 값이 그 자리를 채우고 있었을 뿐이다.
+  진짜 값은 재무제표 표 청크에 있으므로 비정형 검색이 집어야 한다.
+- 추출기 자체를 고치는 건 다음 rebuild 때 한다(`facts/extractor.py` 에서 그
+  절을 제외하거나, 값의 주인을 같은 chunk 의 '법인 또는 단체의 명칭' 으로
+  기록). 지금은 조회 시점 차단으로 충분하고 artifacts 를 다시 만들 필요가 없다.
 - 확인: `python3 scripts/score_answers.py --gold eval/suite_v2.jsonl
   --mode full --pipeline v2 --yes --out results/x` 뒤
   `results/x/results.csv` 에서 `doc_group=periodic` 만 보면 된다.
