@@ -136,7 +136,47 @@ def unknown_subject(question: str, registry: RegistryLike) -> str | None:
     return name
 
 
-def _clarification_reason(plan: QueryPlan, *, can_fill_blanks: bool = False) -> str | None:
+# 되묻기 게이트 (2026-09-01)
+#
+# "KB금융지주는 얼마인가" — 회사 이름만 있고 **무엇을** 묻는지가 없다. 지금은
+# 이런 질문에도 넘겨짚어 아무 숫자나 답한다. 실서비스에서는 틀린 답보다
+# 되묻는 편이 낫다.
+#
+# 판정: 질문에서 회사 이름을 지우고 남은 말이 조사와 의문 표현뿐이면
+# 물어본 항목이 없는 것이다. 항목 사전(`expected_fields`)에 걸린 게 하나라도
+# 있으면 이 규칙은 발동하지 않는다.
+
+_ASK_WORDS = frozenset((
+    "는", "은", "이", "가", "의", "를", "을", "도", "에", "에서", "와", "과",
+    "얼마", "얼마인가", "얼마야", "얼마인지", "얼마나", "얼마였나", "얼마입니까",
+    "뭐야", "무엇인가", "무엇", "뭐", "어떻게", "어때", "어떤가", "어떠한가",
+    "알려줘", "알려주세요", "말해줘", "궁금해", "보여줘", "찾아줘",
+    "인가", "인가요", "입니까", "이야", "야", "해줘", "주세요",
+))
+_WORD_ONLY = re.compile(r"[^가-힣A-Za-z]+")
+
+
+def _asked_item_is_missing(plan: QueryPlan, question: str) -> bool:
+    """질문이 **무엇을** 묻는지가 비어 있는가."""
+    if plan.expected_fields or not plan.companies:
+        return False
+    if plan.task not in ("lookup", "calculate", "compare", "count", "unknown"):
+        return False
+    rest = question or ""
+    # 질문에 실제로 쓰인 표기까지 지운다. 정식명만 지우면 "삼성SDI" 가 남는다.
+    names: list[str] = list(plan.companies)
+    for canonical, mentions in (plan.company_mentions or {}).items():
+        names.append(canonical)
+        names.extend(mentions or [])
+    for name in sorted(set(names), key=len, reverse=True):
+        if name:
+            rest = rest.replace(name, " ")
+    words = [w for w in _WORD_ONLY.sub(" ", rest).split() if w]
+    return all(w in _ASK_WORDS for w in words)
+
+
+def _clarification_reason(plan: QueryPlan, question: str = "", *,
+                          can_fill_blanks: bool = False) -> str | None:
     """거부가 아니라 역질문이 필요한 명백한 빈칸만 찾는다.
 
     `can_fill_blanks` 는 뒤에 계획 보완(2b, HCX)이 남아 있다는 뜻이다.
@@ -150,6 +190,8 @@ def _clarification_reason(plan: QueryPlan, *, can_fill_blanks: bool = False) -> 
     """
     if not plan.companies:
         return "회사명이 필요합니다."
+    if _asked_item_is_missing(plan, question):
+        return "회사 이름만 있고 무엇을 묻는지가 없습니다. 알고 싶은 항목을 적어 주세요."
     if not can_fill_blanks and (plan.answer_mode == "unknown" or plan.task == "unknown"):
         return "알고 싶은 항목이나 작업을 특정해 주세요."
     if (plan.task == "summarize" and not plan.report_types and not plan.report_kinds
@@ -186,7 +228,7 @@ def evaluate_scope(plan: QueryPlan, question: str, registry: RegistryLike,
                 reason=f"코퍼스에 없는 주체: {unknown_name}",
                 entity_types={unknown_name: []},
             )
-        clarification = _clarification_reason(plan, can_fill_blanks=can_fill_blanks)
+        clarification = _clarification_reason(plan, question, can_fill_blanks=can_fill_blanks)
         return ScopeDecision(
             scope="possibly_scope", action="proceed",
             reason="회사를 특정하지 못했으므로 검색 또는 역질문이 필요함",
@@ -196,7 +238,7 @@ def evaluate_scope(plan: QueryPlan, question: str, registry: RegistryLike,
 
     unknown = [company for company, types in entity_types.items() if not types]
     if unknown:
-        clarification = _clarification_reason(plan, can_fill_blanks=can_fill_blanks)
+        clarification = _clarification_reason(plan, question, can_fill_blanks=can_fill_blanks)
         return ScopeDecision(
             scope="possibly_scope", action="proceed",
             reason=("레지스트리에 없는 주체가 있지만 검색 전에는 거부하지 않음: "
@@ -205,7 +247,7 @@ def evaluate_scope(plan: QueryPlan, question: str, registry: RegistryLike,
             needs_clarification=bool(clarification), clarification_reason=clarification,
         )
 
-    clarification = _clarification_reason(plan, can_fill_blanks=can_fill_blanks)
+    clarification = _clarification_reason(plan, question, can_fill_blanks=can_fill_blanks)
     return ScopeDecision(
         scope="in_scope", action="proceed",
         reason="Entity Registry에 코퍼스 등장 주체로 확인됨",

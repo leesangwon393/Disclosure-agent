@@ -13,6 +13,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 
 from disclosure_rag.agent.agent_loop import AgentTrace
+from disclosure_rag.agent.derived_facts import derive, derive_calculations
 from disclosure_rag.common.korean_number import describe_amount, normalize_unit_text
 
 _CALC_TOOL_NAMES = {"calculate_growth_rate", "calculate_ratio", "calculate_cagr"}
@@ -466,6 +467,9 @@ def build_evidence_pack_from_retrieval(
             # 다른 안내였다(2026-08-31 발견).
             body += f"\n- (그 외 {hidden}건 생략)"
         marks = _mark_aggregate(fact_rows, aggregation, compare_winner=compare_winner)
+        # 합계·평균·차이·건수·순위 — 질문이 요구한 것만 파이썬이 계산한다.
+        marks = marks + derive(question, list(fact_rows))
+        marks = marks + derive_calculations(question, list(fact_rows))
         header = "[FACT] 공시 표에서 직접 추출한 확정 값입니다."
         if marks:
             header += ("\n아래 ▶ 와 ▶▶ 는 **계산이 끝난 값**입니다. 목록에서 직접 고르거나 "

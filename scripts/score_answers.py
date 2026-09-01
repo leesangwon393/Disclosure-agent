@@ -80,6 +80,8 @@ _GRADEABLE_KEYS = ("graded_hit",)
 _OPTIONAL_KEYS = (
     "field_coverage", "silent_omission_rate", "citation_recall", "citation_precision",
     "required_coverage",
+    # 단위를 적었는가. 숫자가 없는 답변은 해당 없음(None)이라 분모에서 빠진다.
+    "unit_stated",
 )
 _NUM = re.compile(r"\d[\d,]*\.?\d*")
 
@@ -105,6 +107,67 @@ def _gold_answers(row: dict) -> list[str]:
 
 def _gold_report_ids(row: dict) -> set[str]:
     return set(row.get("gold_report_ids") or row.get("gold_doc_ids") or [])
+
+
+# ----------------------------------------------------------- 정정 체인 (2026-09-01)
+#
+# `evidence_hit` 은 "검색이 정답 문서를 회수했는가"다. 그런데 정정공시는
+# 같은 사건의 **같은 내용**이 원본·1차정정·2차정정으로 문서 ID 만 다르게
+# 존재한다. 정답지에 원본 ID 가 박혀 있는데 검색이 최신 정정본을 가져오면
+# 지금 채점기는 '검색실패'로 찍는다 — 실제로는 맞게 가져온 것이다.
+#
+# 실측(2026-08-31, suite_v2 296문항): '검색실패' 43건 중 **14건**이 같은
+# 정정 체인의 다른 판본이었다. 85.5% -> 90.2%.
+
+
+def load_correction_groups(corpus_root: str) -> dict[str, str]:
+    """`doc_id -> correction_group_id`. 못 만들면 빈 사전(= 예전 동작)."""
+    try:
+        from disclosure_rag.common.manifest_loader import load_manifest
+        from disclosure_rag.common.unicode_utils import PathResolver
+        from disclosure_rag.correction.correction_graph_builder import build_correction_index
+
+        index = build_correction_index(load_manifest(corpus_root), PathResolver(corpus_root))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("정정 체인 적재 실패(%s) — 문서 ID 로만 대조한다", type(e).__name__)
+        return {}
+    groups = {doc_id: rec.correction_group_id for doc_id, rec in index.items()}
+    logger.info("정정 체인 %d문서 / %d그룹", len(groups), len(set(groups.values())))
+    return groups
+
+
+def evidence_hit(gold_ids, got_ids, groups: dict[str, str] | None = None) -> bool:
+    """정답 문서 **또는 같은 정정 체인의 다른 판본**을 회수했는가."""
+    gold_ids, got_ids = set(gold_ids or ()), set(got_ids or ())
+    if not gold_ids:
+        return False
+    if gold_ids & got_ids:
+        return True
+    if not groups:
+        return False
+    # 체인에 없는 문서는 자기 자신이 그룹이다 — 그래야 무관한 두 문서가
+    # None 끼리 만나 같은 그룹으로 묶이지 않는다.
+    gold_groups = {groups.get(d, d) for d in gold_ids}
+    got_groups = {groups.get(d, d) for d in got_ids}
+    return bool(gold_groups & got_groups)
+
+
+# ------------------------------------------------------- 단위 표기 (2026-09-01)
+#
+# 대회는 사람이 채점한다. `3,112,850` 만 적고 단위를 안 쓰면 사람은 감점한다.
+# 그런데 지금 채점기는 숫자만 비교해서 **단위 누락이 지표에 전혀 안 보인다**.
+# 실측(2026-09-01): 숫자를 묻는 189문항 중 33문항(17%)이 단위 없이 답했다.
+
+_UNIT_WORDS = ("원", "%", "퍼센트", "주", "건", "명", "개", "배", "달러", "USD",
+               "포인트", "억", "조", "만", "천", "년", "월", "일", "시간", "㎡", "m2")
+
+
+def unit_stated(answer: str) -> int | None:
+    """답변이 단위를 적었는가. 숫자가 없으면 해당 없음(None)."""
+    body = _body_only(answer)
+    if not _NUM.search(body):
+        return None
+    return int(any(w in body for w in _UNIT_WORDS))
 
 
 # ------------------------------------------------------------------- 서술형 대조
@@ -266,6 +329,95 @@ def _as_decimal(text: str):
     return -d if neg else d
 
 
+# --- 단위 환산 인정 (2026-09-01) ------------------------------------------
+#
+# 같은 값을 공시는 두 가지로 적는다. 채점기가 이걸 모르면 **더 친절한 답이
+# 오답**이 된다.
+#
+#   비율   정답지 `0.0430`      vs 답변 `4.30%`            (G0146 실측)
+#   금액   정답지 `3,112,850`   vs 답변 `3조 1,128억원`    (백만원 표)
+#
+# 비율은 `%` 가 붙은 수만 100배로 본다. 그냥 100배를 허용하면 `4.30` 과
+# `430` 이 같은 값이 되어 버린다.
+
+_PCT_NUM = re.compile(r"(-?\d[\d,]*\.?\d*)\s*(?:%|퍼센트)")
+_BIG_UNITS = {"조": 10**12, "억": 10**8, "만": 10**4}
+_SMALL_UNITS = {"천": 1000, "백": 100, "십": 10}
+# 한국식 금액이 적힌 구간. 숫자와 자릿수 글자가 붙어 있는 덩어리만 본다.
+_KO_RUN = re.compile(r"[\d,.\s조억만천백십]+")
+_KO_TOKEN = re.compile(r"(\d[\d,]*(?:\.\d+)?)|([조억만천백십])")
+_AMOUNT_REL_TOL = Decimal("5E-4")   # `3조 1,128억` 처럼 아래 자리를 버린 표기 흡수
+# 정답지에는 단위가 안 적혀 있다. 표 머리에 쓰이는 단위를 모두 대본다.
+_UNIT_SCALES = (1, 1_000, 10_000, 1_000_000, 100_000_000, 1_000_000_000_000)
+
+
+def _percent_decimals(text: str) -> set:
+    """`4.30%` 처럼 % 가 붙은 수만."""
+    out = set()
+    for m in _PCT_NUM.finditer(text or ""):
+        d = _as_decimal(m.group(1))
+        if d is not None:
+            out.add(d)
+    return out
+
+
+def _read_run(run: str):
+    """`3조 1,128억` -> 3_112_800_000_000. 한국어 자릿수 읽기 규칙 그대로."""
+    total = section = pending = Decimal(0)
+    for m in _KO_TOKEN.finditer(run):
+        num, unit = m.group(1), m.group(2)
+        if num is not None:
+            d = _as_decimal(num)
+            if d is None:
+                return None
+            pending = d
+        elif unit in _SMALL_UNITS:
+            section += (pending or Decimal(1)) * _SMALL_UNITS[unit]
+            pending = Decimal(0)
+        else:
+            # `3천억` 은 (3,000 + 0)억이지 (3,000 + 1)억이 아니다.
+            amount = section + pending
+            total += (amount if amount else Decimal(1)) * _BIG_UNITS[unit]
+            section = pending = Decimal(0)
+    return total + section + pending
+
+
+def korean_amounts(text: str) -> set:
+    """본문에 적힌 한국식 금액을 **원 단위**로 모두 읽는다.
+
+        `3조 1,128억원`   -> 3_112_800_000_000
+        `3천억원`         ->   300_000_000_000
+        `255,698,325천원` -> 255_698_325_000
+    """
+    out = set()
+    for m in _KO_RUN.finditer(text or ""):
+        run = m.group(0)
+        if not any(ch in run for ch in "조억만천백십"):
+            continue
+        if not any(ch.isdigit() for ch in run):
+            continue
+        value = _read_run(run)
+        if value:
+            out.add(value)
+    return out
+
+
+def _amount_equal(gold: Decimal, answer_won: set) -> bool:
+    """정답 수치에 단위를 곱한 값이 답변의 한국식 금액과 같은가.
+
+    정답지에는 단위가 안 적혀 있다. 그래서 천/만/백만/억/조 를 모두 대본다 —
+    자릿수가 긴 수라 우연히 맞을 확률은 낮다.
+    """
+    if not answer_won or gold == 0:
+        return False
+    for scale in _UNIT_SCALES:
+        target = gold * scale
+        for got in answer_won:
+            if abs(target - got) <= abs(target) * _AMOUNT_REL_TOL:
+                return True
+    return False
+
+
 def _answer_hit(answer: str, golds: list[str]) -> bool:
     """정답 수치가 답변에 있는가. 표기 차이는 흡수한다.
 
@@ -274,12 +426,17 @@ def _answer_hit(answer: str, golds: list[str]) -> bool:
     `9.90 == 9.9%` 를 흡수하는데, 값 경로는 문자열이라 오답이었다.
     실측으로 suite_v2 18문항이 이것 때문에 정답을 오답으로 받고 있었다
     (소수점 14건 `17.0` vs `17%`, 괄호 음수 4건 `(6,503)` vs `-6,503`).
+
+    2026-09-01: 여기에 **단위 환산**을 더했다. `0.0430` = `4.30%`,
+    `3,112,850`(백만원 표) = `3조 1,128억원`.
     """
     if not golds:
         return False
     body = _body_only(answer)
     norm_answer = _norm(body)
     answer_decimals = {d for n in _numbers(body) if (d := _as_decimal(n)) is not None}
+    answer_percents = _percent_decimals(body)
+    answer_won = korean_amounts(body)
     for g in golds:
         ng = _norm(g)
         if not ng:
@@ -289,6 +446,14 @@ def _answer_hit(answer: str, golds: list[str]) -> bool:
             # 수치 정답은 **값 단위로 정확히** 일치해야 한다. 부분 문자열을
             # 허용하면 `1234` 가 `91,234,567` 안에서 정답이 된다(실측 확인).
             if gd in answer_decimals:
+                return True
+            # 비율: 정답지 `0.0430` <-> 답변 `4.30%`
+            if gd * 100 in answer_percents:
+                return True
+            if "%" in (g or "") and gd / 100 in answer_decimals:
+                return True
+            # 금액: 정답지 `3,112,850` <-> 답변 `3조 1,128억원`
+            if _amount_equal(gd, answer_won):
                 return True
         elif len(ng) >= 2 and ng in norm_answer:
             # 비수치 정답(계약상대·사유 등)은 포함 여부로 본다.
@@ -575,7 +740,7 @@ def _prepare_v2(bundle, corpus_root: str, artifacts: str, thinking: str = "off")
     )
 
 
-def _run_v2(ask, rows: list[dict]) -> list[dict]:
+def _run_v2(ask, rows: list[dict], groups: dict[str, str] | None = None) -> list[dict]:
     """신 파이프라인으로 채점. v1 과 **같은 컬럼**을 낸다(직접 비교용)."""
     out = []
     for i, row in enumerate(rows, 1):
@@ -628,8 +793,8 @@ def _run_v2(ask, rows: list[dict]) -> list[dict]:
         exact = int(bool(hit) and position == 1 and len(numbers) <= 2)
         # evidence_hit 은 '검색이 정답 문서를 회수했는가'다. 답변에 인용됐는지는
         # citation_hit 으로 따로 본다 — 둘이 갈리면 게이트가 막은 것이다.
-        evidence_hit = bool(gold_ids & (cited | retrieved))
-        citation_hit = bool(gold_ids & cited)
+        hit_evidence = evidence_hit(gold_ids, cited | retrieved, groups)
+        citation_hit = evidence_hit(gold_ids, cited, groups)
         refusal = _is_refusal(answer)
         # 서술형 채점 — 정답 문장이 있든 없든 항상 계산한다. 값이 맞았는지와
         # 요구 항목을 다 다뤘는지는 다른 질문이다.
@@ -657,9 +822,11 @@ def _run_v2(ask, rows: list[dict]) -> list[dict]:
             **{k: v for k, v in open_score.items() if k != "silent_fields"},
             "silent_fields": " / ".join(open_score["silent_fields"]),
             "n_answer_numbers": len(numbers), "gold_position": position,
-            "evidence_hit": int(evidence_hit), "citation_hit": int(citation_hit),
+            "evidence_hit": int(hit_evidence), "citation_hit": int(citation_hit),
             "refusal": int(refusal),
-            "label": _label(bool(graded), evidence_hit, refusal, gradeable=bool(gradeable)),
+            # 단위를 적었는가 — 대회는 사람이 채점한다(2026-09-01 추가)
+            "unit_stated": unit_stated(answer),
+            "label": _label(bool(graded), hit_evidence, refusal, gradeable=bool(gradeable)),
             # v2 전용 진단
             "numbers_grounded": int(bool(validation and validation.numbers_grounded)),
             "has_citation": int(bool(validation and validation.has_citation)),
@@ -684,7 +851,8 @@ def _run_v2(ask, rows: list[dict]) -> list[dict]:
 # --------------------------------------------------------------------------- 실행
 
 def _run_retrieval(bundle, rows: list[dict], k: int, *,
-                   candidate_k: int = 50, rerank_top_n: int = 50) -> list[dict]:
+                   candidate_k: int = 50, rerank_top_n: int = 50,
+                   groups: dict[str, str] | None = None) -> list[dict]:
     """candidate_k / rerank_top_n 을 노출하는 이유(2026-08-30):
 
     HybridRetriever 의 기본값은 candidate_k=50, rerank_top_n=50 이다. 즉 k 를
@@ -711,7 +879,7 @@ def _run_retrieval(bundle, rows: list[dict], k: int, *,
         elapsed = time.time() - t
 
         retrieved_ids = [c.report_id for c, _ in hits]
-        evidence_hit = bool(gold_ids & set(retrieved_ids))
+        hit_evidence = evidence_hit(gold_ids, retrieved_ids, groups)
         # 근거만 보면 답할 수 있었는가 = 정답 문자열이 회수된 조각 안에 있는가
         ceiling = any(_norm(g) and _norm(g) in _norm(c.raw_text) for c, _ in hits for g in golds)
 
@@ -725,7 +893,7 @@ def _run_retrieval(bundle, rows: list[dict], k: int, *,
             "doc_group": row.get("doc_group") or "?",
             "gold": golds[0] if golds else "", "n_gold": len(golds),
             "n_gold_docs": len(gold_ids),
-            "evidence_hit": int(evidence_hit), "answer_ceiling": int(ceiling),
+            "evidence_hit": int(hit_evidence), "answer_ceiling": int(ceiling),
             # context_recall = 회수된 gold 문서 / 전체 gold 문서.
             # evidence_hit(하나라도 걸리면 1)과 달리 부분 회수를 구분한다.
             "context_recall": round(recall_at_k(retrieved_ids, gold_ids, k), 4),
@@ -737,7 +905,7 @@ def _run_retrieval(bundle, rows: list[dict], k: int, *,
             "ndcg_at_10": round(ndcg_at_k(retrieved_ids, gold_ids, 10), 4),
             # 못 찾으면 0. 평균내지 말 것 — 집계에서 '찾은 것만'의 중앙값을 쓴다
             "first_gold_rank": rank or 0,
-            "label": "상한도달" if ceiling else ("근거만도달" if evidence_hit else "검색실패"),
+            "label": "상한도달" if ceiling else ("근거만도달" if hit_evidence else "검색실패"),
             "elapsed_sec": round(elapsed, 3),
         })
         # 진행 상황을 남긴다 — 314문항이 20분 가까이 걸리는데 로그가 비어 있으면
@@ -753,7 +921,8 @@ def _run_retrieval(bundle, rows: list[dict], k: int, *,
     return out
 
 
-def _run_full(bundle, tools, extractor, rows: list[dict], *, max_iterations: int) -> list[dict]:
+def _run_full(bundle, tools, extractor, rows: list[dict], *, max_iterations: int,
+              groups: dict[str, str] | None = None) -> list[dict]:
     from disclosure_rag.agent.ask import ask
     from disclosure_rag.agent.hcx_client import HCXClient
 
@@ -782,7 +951,7 @@ def _run_full(bundle, tools, extractor, rows: list[dict], *, max_iterations: int
         elapsed = time.time() - t
 
         hit = _answer_hit(answer, golds)
-        evidence_hit = bool(gold_ids & cited)
+        hit_evidence = evidence_hit(gold_ids, cited, groups)
         refusal = _is_refusal(answer)
 
         out.append({
@@ -790,10 +959,10 @@ def _run_full(bundle, tools, extractor, rows: list[dict], *, max_iterations: int
             "doc_group": row.get("doc_group") or "?",
             "gold": golds[0] if golds else "", "n_gold": len(golds),
             "answer": answer.replace("\n", " ")[:600],
-            "answer_hit": int(hit), "evidence_hit": int(evidence_hit),
+            "answer_hit": int(hit), "evidence_hit": int(hit_evidence),
             "citation_hit": int(bool(gold_ids & {r for r in gold_ids if r in answer})),
-            "refusal": int(refusal),
-            "label": _label(hit, evidence_hit, refusal),
+            "refusal": int(refusal), "unit_stated": unit_stated(answer),
+            "label": _label(hit, hit_evidence, refusal),
             "numbers_grounded": int(bool(validation and validation.numbers_grounded)),
             "has_citation": int(bool(validation and validation.has_citation)),
             "validation_passed": int(bool(validation and validation.passed)),
@@ -968,7 +1137,7 @@ def _write(out_dir: Path, config: dict, metrics: dict, rows: list[dict]) -> None
               "refusal", "numbers_grounded", "has_citation", "validation_passed",
               "context_recall", "context_precision", "context_ap", "mrr", "ndcg_at_10",
               "field_coverage", "silent_omission_rate",
-              "citation_recall", "citation_precision"):
+              "citation_recall", "citation_precision", "unit_stated"):
         if metrics.get(k) is not None and k in metrics:
             lines.append(f"| {k} | {metrics[k]} |")
 
@@ -1014,7 +1183,8 @@ def _coerce(col: str, raw: str):
         return raw
 
 
-def _rescore(src: Path, gold_rows: list[dict], out_dir: Path, mode: str) -> int:
+def _rescore(src: Path, gold_rows: list[dict], out_dir: Path, mode: str,
+             groups: dict[str, str] | None = None) -> int:
     """이미 받아둔 답변을 다시 채점한다. HCX 0회, 파이프라인도 안 띄운다.
 
     채점 기준을 고칠 때마다 20분짜리 실행을 반복하지 않으려고 만들었다.
@@ -1027,15 +1197,20 @@ def _rescore(src: Path, gold_rows: list[dict], out_dir: Path, mode: str) -> int:
         return 2
 
     full: dict[str, str] = {}
+    # 재채점에서도 근거 판정을 다시 한다 — 정정 체인 규칙이 바뀌었기 때문이다.
+    seen_ids: dict[str, set[str]] = {}
     ans_path = src / "answers.jsonl"
     if ans_path.exists():
         for line in ans_path.read_text(encoding="utf-8").splitlines():
             if line.strip():
                 d = json.loads(line)
+                ids = set(d.get("cited_ids") or []) | set(d.get("retrieved_ids") or [])
                 if d.get("id"):
                     full[str(d["id"])] = d.get("answer") or ""
+                    seen_ids[str(d["id"])] = ids
                 if d.get("query"):
                     full[d["query"]] = d.get("answer") or ""
+                    seen_ids[d["query"]] = ids
         logger.info("답변 원문 %d건을 answers.jsonl 에서 읽었다", len(full))
     else:
         logger.warning("answers.jsonl 이 없다 — results.csv 의 600자 잘린 답변으로 "
@@ -1074,7 +1249,15 @@ def _rescore(src: Path, gold_rows: list[dict], out_dir: Path, mode: str) -> int:
         numbers = _answer_numbers(answer)
         position = _gold_position(answer, golds)
         refusal = _is_refusal(answer)
+        # 파이프라인이 실제로 회수한 문서 ID 가 남아 있으면 근거 판정을 다시
+        # 한다. 없으면 이전 실행의 값을 그대로 쓴다.
+        got = seen_ids.get(rid) or seen_ids.get(query)
+        if got is not None:
+            hit_evidence = evidence_hit(_gold_report_ids(gold_row), got, groups)
+        else:
+            hit_evidence = bool(r.get("evidence_hit"))
         r.update({
+            "evidence_hit": int(hit_evidence), "unit_stated": unit_stated(answer),
             "answer": answer.replace("\n", " ")[:600], "answer_full": answer,
             "gold": golds[0] if golds else "", "n_gold": len(golds),
             "answer_hit": int(hit),
@@ -1086,7 +1269,7 @@ def _rescore(src: Path, gold_rows: list[dict], out_dir: Path, mode: str) -> int:
             "bonus_n": bonus["n"], "bonus_matched": bonus["matched"],
             "n_answer_numbers": len(numbers), "gold_position": position,
             "refusal": int(refusal),
-            "label": _label(bool(graded), bool(r.get("evidence_hit")), refusal,
+            "label": _label(bool(graded), hit_evidence, refusal,
                             gradeable=bool(gradeable)),
         })
         rows.append(r)
@@ -1184,22 +1367,28 @@ def main() -> int:
 
     out_dir = Path(args.out or f"results/answers_{args.mode}")
 
+    # 정정 체인. 정답지의 원본 ID 와 검색이 가져온 최신 정정본을 같은
+    # 근거로 인정하려면 이게 있어야 한다(2026-09-01).
+    groups = load_correction_groups(args.corpus)
+
     if args.rescore:
         # 인덱스도 모델도 안 띄운다. 채점 기준만 다시 적용한다.
-        return _rescore(Path(args.rescore), rows, out_dir, args.mode)
+        return _rescore(Path(args.rescore), rows, out_dir, args.mode, groups)
 
     bundle = _load_bundle(args.artifacts, use_reranker=not args.no_reranker)
 
     if args.mode == "retrieval":
         results = _run_retrieval(bundle, rows, args.k,
                                  candidate_k=args.candidate_k,
-                                 rerank_top_n=args.rerank_top_n or args.candidate_k)
+                                 rerank_top_n=args.rerank_top_n or args.candidate_k,
+                                 groups=groups)
     elif args.pipeline == "v2":
         results = _run_v2(_prepare_v2(bundle, args.corpus, args.artifacts,
-                                      thinking=args.thinking), rows)
+                                      thinking=args.thinking), rows, groups)
     else:
         tools, extractor = _prepare_agent(bundle, args.corpus)
-        results = _run_full(bundle, tools, extractor, rows, max_iterations=args.max_iterations)
+        results = _run_full(bundle, tools, extractor, rows,
+                            max_iterations=args.max_iterations, groups=groups)
 
     metrics = _aggregate(results, args.mode)
     config = {"gold": args.gold, "artifacts": args.artifacts, "mode": args.mode,

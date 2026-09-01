@@ -12,7 +12,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from score_answers import _answer_hit, _gold_answers, _is_refusal, _label, _norm  # noqa: E402
+from score_answers import (  # noqa: E402
+    _answer_hit, _gold_answers, _is_refusal, _label, _norm,
+    evidence_hit, korean_amounts, unit_stated,
+)
 
 
 def test_comma_notation_is_ignored():
@@ -31,9 +34,16 @@ def test_wrong_number_is_not_a_hit():
     assert not _answer_hit("순자산액은 224,787,773,988,055원입니다", ["224,787,773,988,054"])
 
 
-def test_rescaled_number_is_not_a_hit():
-    """`7,661,584백만원` 은 `7,661,584,000,000` 의 정답 표기가 아니다."""
-    assert not _answer_hit("7,661,584백만원입니다", ["7,661,584,000,000"])
+def test_a_number_without_its_unit_is_not_a_hit():
+    """`7,661,584원` 은 `7,661,584,000,000` 이 아니다 — 백만 배 틀렸다.
+
+    2026-09-01: 이 자리에 있던 테스트는 `7,661,584백만원` 도 오답이라고
+    못 박고 있었다. 그런데 7,661,584 x 1,000,000 = 7,661,584,000,000 —
+    **같은 값이다**. 맞는 답을 오답으로 세던 규칙이라 고쳤다.
+    """
+    assert not _answer_hit("7,661,584원입니다", ["7,661,584,000,000"])
+    assert not _answer_hit("7,661,584입니다", ["7,661,584,000,000"])
+    assert _answer_hit("7,661,584백만원입니다", ["7,661,584,000,000"])
 
 
 def test_substring_of_a_longer_number_is_not_a_hit():
@@ -572,3 +582,95 @@ def test_latency_breakdown_lands_in_metrics():
                     _v2_row(ms_total=3000.0, ms_rerank=1200.0)], "full")
     assert m["latency_breakdown"]["rerank"]["median_ms"] == 1200.0
     assert m["latency_breakdown"]["total"]["n"] == 2
+
+
+# --------------------------------------------------------------- 정정 체인 (A-9a)
+#
+# 정답지에 원본 문서 ID 가 박혀 있는데 검색이 최신 정정본을 가져오면 예전
+# 채점기는 '검색실패'로 찍었다. 실측 43건 중 14건이 그것이었다.
+
+GROUPS = {"exchange_1": "exchange_1", "exchange_1r": "exchange_1",
+          "exchange_2": "exchange_2"}
+
+
+def test_the_same_document_is_a_hit():
+    assert evidence_hit({"exchange_1"}, {"exchange_1"}, GROUPS)
+
+
+def test_another_version_of_the_same_correction_chain_is_a_hit():
+    assert evidence_hit({"exchange_1"}, {"exchange_1r"}, GROUPS)
+
+
+def test_a_different_chain_is_not_a_hit():
+    assert not evidence_hit({"exchange_1"}, {"exchange_2"}, GROUPS)
+
+
+def test_documents_outside_any_chain_are_each_their_own_group():
+    """체인에 없는 문서 둘을 같은 그룹(None)으로 묶으면 안 된다."""
+    assert not evidence_hit({"zzz_a"}, {"zzz_b"}, GROUPS)
+
+
+def test_no_chain_map_falls_back_to_document_ids():
+    assert evidence_hit({"exchange_1"}, {"exchange_1"}, {})
+    assert not evidence_hit({"exchange_1"}, {"exchange_1r"}, {})
+
+
+def test_empty_gold_is_never_a_hit():
+    assert not evidence_hit(set(), {"exchange_1"}, GROUPS)
+
+
+# ------------------------------------------------------------- 단위 환산 (A-9b)
+
+def test_percent_notation_equals_the_decimal_form():
+    """정답지 `0.0430`, 답변 `4.30%` — 같은 값이다(G0146 실측)."""
+    assert _answer_hit("지분율은 4.30% 입니다", ["0.0430"])
+    assert _answer_hit("지분율은 0.0430 입니다", ["4.30%"])
+
+
+def test_a_hundredfold_number_without_a_percent_sign_is_not_a_hit():
+    """`%` 가 없으면 100배를 인정하지 않는다 — `4.30` 과 `430` 은 다른 값이다."""
+    assert not _answer_hit("430 건입니다", ["4.30"])
+
+
+@pytest.mark.parametrize("text,won", [
+    ("3조 1,128억원", 3_112_800_000_000),
+    ("3천억원", 300_000_000_000),
+    ("1조원", 1_000_000_000_000),
+    ("255,698,325천원", 255_698_325_000),
+    ("5만 5,000원", 55_000),
+])
+def test_korean_amounts_are_read_in_won(text, won):
+    assert korean_amounts(text) == {won}
+
+
+def test_plain_numbers_are_not_read_as_korean_amounts():
+    assert korean_amounts("224,787,773,988,054원") == set()
+    assert korean_amounts("2024년 3월 15일") == set()
+
+
+def test_korean_amount_matches_the_gold_in_table_units():
+    """정답지 `3,112,850`(백만원 표) vs 답변 `3조 1,128억원`."""
+    assert _answer_hit("영업비용은 3조 1,128억원입니다", ["3,112,850"])
+
+
+def test_a_thousandfold_korean_amount_is_not_a_hit():
+    """`255,698,325천원` 은 백만원 표의 `3,112,850` 이 아니다."""
+    assert not _answer_hit("영업비용은 255,698,325천원입니다", ["3,112,850"])
+
+
+# ------------------------------------------------------------- 단위 표기 (A-9c)
+#
+# 대회는 사람이 채점한다. 숫자만 적고 단위를 빼면 감점이다. 지금까지는
+# 숫자만 비교해서 이게 지표에 전혀 안 보였다.
+
+def test_a_number_without_a_unit_is_flagged():
+    assert unit_stated("3,112,850") == 0
+
+
+def test_a_number_with_a_unit_passes():
+    assert unit_stated("3,112,850백만원입니다") == 1
+    assert unit_stated("지분율은 4.30% 입니다") == 1
+
+
+def test_an_answer_with_no_number_is_not_counted():
+    assert unit_stated("제공된 근거로는 확인할 수 없습니다") is None
