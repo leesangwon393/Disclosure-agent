@@ -100,8 +100,18 @@ class ProcessedEvidence:
     def found_fields(self) -> list[str]:
         return sorted(self.by_field)
 
-    def missing(self, expected: Iterable[str]) -> list[str]:
-        have = {normalize_field_key(f) for f in self.by_field}
+    def missing(self, expected: Iterable[str], also_have: frozenset[str] = frozenset()) -> list[str]:
+        """`also_have`: 정형(Facts) 채널이 이미 찾아준 항목(정규화된 key).
+
+        `by_field`는 비정형 검색으로 물어온 청크의 field_codes/텍스트에서만
+        채워진다(아래 `process_evidence` 참조) — Facts SQL 조회 결과는 안
+        본다. 그래서 Facts 가 정답을 정확히 찾아도 비정형 검색이 우연히 같은
+        내용을 안 물어오면 "확인 안 됨"으로 판정되어 재검색 루프에 빠졌다
+        (2026-09-01 실측: SK텔레콤 리스부채 — facts_rows 에 정답이 있는데도
+        missing 처리됨). 호출부(sufficiency.check_sufficiency)가 Facts 결과를
+        `also_have` 로 넘겨 이 단절을 메운다.
+        """
+        have = {normalize_field_key(f) for f in self.by_field} | also_have
         return [f for f in expected if normalize_field_key(f) and normalize_field_key(f) not in have]
 
     @property

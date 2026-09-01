@@ -44,6 +44,7 @@ from disclosure_rag.agent.decompose import DecomposeResult, decompose_and_search
 from disclosure_rag.agent.evidence import EvidencePack, build_evidence_pack_from_retrieval
 from disclosure_rag.agent.evidence_processor import ProcessedEvidence, process_evidence
 from disclosure_rag.agent.existence import ExistenceResult, NOT_APPLICABLE, check_existence
+from disclosure_rag.agent.field_schema import normalize_field_key
 from disclosure_rag.agent.query_plan import (
     PlanValidation,
     QueryPlan,
@@ -246,9 +247,19 @@ class AskV2:
             _t = time.perf_counter()
             processed = process_evidence(plan, merged)
             self._add_timing("process", (time.perf_counter() - _t) * 1000)
+            # Facts(정형) 채널이 이 시점까지 찾은 항목. `processed.by_field`는
+            # 비정형 검색 결과만 보므로, Facts 가 정확히 찾은 값도 여기서
+            # 넘기지 않으면 "확인 안 됨"으로 남아 재검색 루프를 끝까지 돈다
+            # (2026-09-01 실측, SK텔레콤 리스부채 등 — evidence_processor.py
+            # ProcessedEvidence.missing 참조).
+            facts_found = frozenset(
+                normalize_field_key(f.get("item")) for f in self._last_facts
+                if f.get("item") and (f.get("value") not in (None, ""))
+            )
             report = check_sufficiency(plan, processed, decompose_result=decomposed,
                                        nudges_used=attempt,
-                                       max_nudges=self.max_nudges)
+                                       max_nudges=self.max_nudges,
+                                       facts_found_fields=facts_found)
             out.decomposed, out.processed, out.sufficiency = decomposed, processed, report
             for note in getattr(decomposed, "notes", ()) or ():
                 if note not in out.notes:

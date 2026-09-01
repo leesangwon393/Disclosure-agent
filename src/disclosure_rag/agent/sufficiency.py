@@ -184,14 +184,21 @@ class SufficiencyReport:
 def check_sufficiency(
     plan, processed, *, decompose_result=None, nudges_used: int = 0,
     max_nudges: int = DEFAULT_MAX_NUDGES,
+    facts_found_fields: frozenset[str] = frozenset(),
 ) -> SufficiencyReport:
     """Stage 9 결과와 계획을 대조한다. LLM 을 쓰지 않는다.
 
     `plan.expected_fields` 가 비어 있으면 **제약을 걸지 않는다**(fail open).
     Field Schema 가 모르는 공시유형이거나 질문이 유형을 특정하지 못한 경우인데,
     거기에 억지 기준을 걸면 답할 수 있는 질문이 영원히 '부족'이 된다.
+
+    `facts_found_fields`: 정형(Facts) 채널이 이 질문에서 이미 찾은 항목명
+    (정규화됨). `processed.by_field`는 비정형 검색 결과만 보므로, Facts 가
+    정확히 찾은 항목도 이걸 안 넘기면 "확인 안 됨"으로 남는다(2026-09-01
+    실측 — evidence_processor.ProcessedEvidence.missing 참조).
     """
-    missing = list(processed.missing(plan.expected_fields)) if plan.expected_fields else []
+    missing = (list(processed.missing(plan.expected_fields, facts_found_fields))
+               if plan.expected_fields else [])
     empty = list(getattr(decompose_result, "empty_labels", []) or [])
     pairs = [p.field for p in getattr(processed, "incomplete_pairs", [])] \
         if plan.task == "correction_diff" else []

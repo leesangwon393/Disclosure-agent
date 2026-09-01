@@ -38,6 +38,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from disclosure_rag.agent.field_schema import normalize_field_key
+
 # ---------------------------------------------------------------------------- 타입
 
 Scope = Literal["in_scope", "possibly_scope", "hard_out_scope"]
@@ -457,6 +459,33 @@ def detect_report_types(query: str) -> list[str]:
     return out
 
 
+def _exclude_company_tokens(fields: list[str], companies: list[str] | None) -> list[str]:
+    """expected_fields 후보에서 이미 resolve 된 회사명(과 그 접두어)을 뺀다.
+
+    2026-09-01 실측: field_schema 의 항목명 풀에 회사명·그룹 약칭이 섞여
+    들어간다("SK텔레콤" 뿐 아니라 "SK" 같은 접두어까지). 이걸 metric 후보로
+    잘못 인식하면, entity 가 sufficiency 검사에서 "확인 안 된 필수 metric"으로
+    남아 재검색 루프(최대 2회, 검색 1회 90~100초)를 끝까지 돌고 결국 거부한다.
+
+    blacklist 가 아니다 — 이 함수는 이 질문에서 EntityExtractor 가 **이미
+    resolve 한 회사**만 제외 대상으로 본다("SK", "삼성" 등을 하드코딩하지
+    않음). 접두어까지 빼는 이유: "SK텔레콤"의 정식 회사명은 알지만 데이터에
+    섞인 그룹 약칭("SK")은 별도 등록이 없어 접두어 관계로만 잡을 수 있다.
+    """
+    if not companies:
+        return fields
+    norm_companies = [normalize_field_key(c) for c in companies if c]
+    if not norm_companies:
+        return fields
+    out = []
+    for f in fields:
+        nf = normalize_field_key(f)
+        if any(nc == nf or nc.startswith(nf) for nc in norm_companies):
+            continue
+        out.append(f)
+    return out
+
+
 # ---------------------------------------------------------------- 빌더
 
 
@@ -542,7 +571,8 @@ class RulePlanBuilder:
             src["aggregation"] = "rule"
 
         expected_fields = self._expected_fields(q, mode=mode, metrics=metrics,
-                                                report_kinds=report_kinds)
+                                                report_kinds=report_kinds,
+                                                companies=companies)
         if expected_fields:
             src["expected_fields"] = "rule"
 
@@ -596,7 +626,8 @@ class RulePlanBuilder:
         return list(normalize_period_tokens(raw) or [])
 
     def _expected_fields(self, query: str, *, mode: AnswerMode,
-                         metrics: list[str], report_kinds: list[str]) -> list[str]:
+                         metrics: list[str], report_kinds: list[str],
+                         companies: list[str] | None = None) -> list[str]:
         """closed 는 질문이 지목한 항목, open 은 공시유형의 required.
 
         두 용법이 다르다. "투자금액은 얼마인가"의 충족 조건은 투자금액 하나지,
@@ -606,20 +637,28 @@ class RulePlanBuilder:
         **closed 에서 항목을 못 찾으면 빈 목록을 돌려준다(fail open).**
         required 전부로 대체하면 답할 수 있는 질문이 충분성 검사에서 막히고
         거부까지 간다 — 통합 테스트에서 실제로 발생했다.
+
+        `companies`: 이미 이 질문에서 resolve 된 회사명(entity span). facts 표에
+        회사명·그룹 약칭이 잘못 항목명으로 섞여 들어간 경우(2026-09-01 실측:
+        90개사·323종, "SK텔레콤" 뿐 아니라 그룹 약칭 "SK"까지)를 여기서 걸러낸다.
+        blacklist 가 아니다 — 이 질문에서 실제로 resolve 된 회사만 제외 대상이라
+        벤치마크에 없는 새 회사·새 약칭에도 똑같이 적용된다.
         """
         named = sorted({_nfc(m).strip() for m in metrics if m})
 
         if mode == "closed":
             if named:
-                return named
+                return _exclude_company_tokens(named, companies)
             if self.schema is not None:
                 # 손으로 쓴 지표 목록(35줄)에 없어도, 명세의 항목명으로 찾는다.
-                return self.schema.fields_mentioned(query, report_kinds)
+                return _exclude_company_tokens(
+                    self.schema.fields_mentioned(query, report_kinds), companies)
             return []
 
         if self.schema is None:
-            return named
-        return self.schema.expected_fields(query) or named
+            return _exclude_company_tokens(named, companies)
+        return _exclude_company_tokens(
+            self.schema.expected_fields(query) or named, companies)
 
     @staticmethod
     def _operations(*, companies: list[str], periods: list[str],
