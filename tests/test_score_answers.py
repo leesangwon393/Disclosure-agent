@@ -674,3 +674,91 @@ def test_a_number_with_a_unit_passes():
 
 def test_an_answer_with_no_number_is_not_counted():
     assert unit_stated("제공된 근거로는 확인할 수 없습니다") is None
+
+
+# --------------------------------------------- 2026-09-01 교차 검수에서 잡은 것
+#
+# 아래는 전부 "느슨해서 틀린 답을 정답으로 세던" 규칙이다. 채점기가 후하면
+# 개선이 없는데도 있는 것처럼 보인다.
+
+from score_answers import _strip_ordinals, _renderings  # noqa: E402
+from decimal import Decimal  # noqa: E402
+
+
+def test_a_short_gold_does_not_borrow_a_unit_it_was_not_given():
+    """정답지의 `4.0` 에 답변 `3,999,455 백만원` 이 걸리면 안 된다.
+
+    네 자리 미만 정답에는 단위 환산을 적용하지 않는다. 다만 답변에 적힌
+    숫자 자체가 정답과 같으면(`150` <-> `150억원`) 그건 예전부터 정답으로
+    센다 — 정답지에 단위가 안 적혀 있어 구분할 방법이 없다. 한 자리 정답이
+    남의 숫자에 걸리는 경우는 이 규칙의 알려진 한계다.
+    """
+    assert not _answer_hit("금액은 3,999,455 백만원입니다", ["4.0"])
+    assert _answer_hit("영업이익은 150억원입니다.", ["150"])
+
+
+def test_a_number_inside_an_article_reference_is_not_a_value():
+    assert not _answer_hit("정관 제3조 제1항에 따라 배당합니다.", ["3"])
+    assert not _answer_hit("제55기 정기주주총회입니다.", ["55"])
+
+
+def test_a_plain_count_still_matches():
+    assert _answer_hit("총 3건입니다.", ["3"])
+
+
+def test_ordinals_are_stripped_but_amounts_survive():
+    assert "3" not in _strip_ordinals("제3조 제1항")
+    assert "3,112,850" in _strip_ordinals("금액은 3,112,850백만원")
+
+
+def test_a_near_miss_amount_is_not_a_hit():
+    """예전엔 상대오차 5e-4 창으로 견줘 서로 다른 두 값이 같아졌다."""
+    assert not _answer_hit("금액은 3,999,455 백만원입니다", ["4.0"])
+    assert not _answer_hit("금액은 255,698,325천 원입니다", ["25,575,912"])
+
+
+def test_renderings_are_the_korean_readings_of_one_amount():
+    got = _renderings(Decimal("3112850000000"))
+    assert Decimal("3112850000000") in got      # 그대로
+    assert Decimal("3112800000000") in got      # "3조 1,128억원"
+    assert Decimal("3000000000000") in got      # "3조원"
+
+
+@pytest.mark.parametrize("text", [
+    "정관 제3조 제1항에 따라",
+    "발행주식수는 10만 주입니다",
+    "임직원은 약 3만 명입니다",
+    "제55기 정기주주총회",
+])
+def test_counting_words_and_ordinals_are_not_amounts(text):
+    assert korean_amounts(text) == set()
+
+
+def test_a_sentence_boundary_does_not_join_two_amounts():
+    assert korean_amounts("총자산은 5조. 3천억은 부채다") == {
+        5_000_000_000_000, 300_000_000_000}
+
+
+def test_an_enumeration_keeps_each_amount_separate():
+    assert korean_amounts("매출은 1,234억, 5,678억, 9,012억원이다") == {
+        123_400_000_000, 567_800_000_000, 901_200_000_000}
+
+
+def test_a_year_after_an_amount_is_not_part_of_it():
+    assert korean_amounts("2024년 1,000억 2025년 2,000억 증가") == {
+        100_000_000_000, 200_000_000_000}
+
+
+# ------------------------------------------------------- 단위 표기 지표 (재정의)
+
+def test_a_unit_must_be_attached_to_the_value():
+    """본문 아무 데나 있는 글자를 세면 지표가 아무것도 못 거른다 —
+    실측 272건 중 266건(97.8%)이 통과했다."""
+    assert unit_stated("2024년 매출은 3,112,850 입니다.") == 0
+    assert unit_stated("주주총회에서 1,234,567 를 의결했습니다.") == 0
+    assert unit_stated("천안 공장의 생산능력은 1,234,567 입니다.") == 0
+
+
+def test_a_date_is_skipped_before_judging_the_first_real_value():
+    assert unit_stated("2024년 매출은 3조 1,128억원입니다.") == 1
+    assert unit_stated("제55기 정기주주총회입니다.") is None

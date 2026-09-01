@@ -13,8 +13,13 @@ from pathlib import Path
 from dataclasses import dataclass, field
 
 from disclosure_rag.agent.agent_loop import AgentTrace
-from disclosure_rag.agent.derived_facts import derive, derive_calculations
-from disclosure_rag.common.korean_number import describe_amount, normalize_unit_text
+from disclosure_rag.agent.derived_facts import (
+    derive, derive_calculations,
+    statement_kind as statement_kind_of, unit_of,
+)
+from disclosure_rag.common.korean_number import (
+    describe_amount, normalize_unit_text, unit_multiplier,
+)
 
 _CALC_TOOL_NAMES = {"calculate_growth_rate", "calculate_ratio", "calculate_cagr"}
 
@@ -300,7 +305,10 @@ def _mark_aggregate(fact_rows: list[dict], aggregation: str, *,
     for row in fact_rows:
         if row.get("value_num") is None:
             continue
-        key = (row.get("company"), row.get("item") or row.get("key_norm"))
+        # 단위와 연결/별도까지 키에 넣는다. 백만원 표와 천원 표의 값을
+        # 한 그룹에서 견주면 1,000배 틀린 최대값이 나온다(2026-09-01 발견).
+        key = (row.get("company"), row.get("item") or row.get("key_norm"),
+               unit_of(row), statement_kind_of(row))
         groups.setdefault(key, []).append(row)
     if not groups:
         return []
@@ -312,22 +320,24 @@ def _mark_aggregate(fact_rows: list[dict], aggregation: str, *,
     if aggregation in ("max", "min"):
         label = "최대" if aggregation == "max" else "최소"
         pick = max if aggregation == "max" else min
-        for (company, item), rows in groups.items():
+        for (company, item, unit, kind), rows in groups.items():
             best = pick(rows, key=lambda r: r["value_num"])
+            name = f"{item}({kind})" if kind else item
             lines.append(
-                f"▶ {company} {item} {label}값: {_fact_value(best)}"
+                f"▶ {company} {name} {label}값: {_fact_value(best)}{unit}"
                 f" [report_id: {best.get('report_id') or best.get('doc_id')}]"
             )
-            by_item.setdefault(item, []).append((company, best))
+            by_item.setdefault(name, []).append((company, best))
     else:
         # 승자만 묻는 질문 — 회사마다 최신 값을 대표로 뽑는다.
-        for (company, item), rows in groups.items():
+        for (company, item, unit, kind), rows in groups.items():
             best = rows[0]
+            name = f"{item}({kind})" if kind else item
             lines.append(
-                f"▶ {company} {item}: {_fact_value(best)}"
+                f"▶ {company} {name}: {_fact_value(best)}{unit}"
                 f" [report_id: {best.get('report_id') or best.get('doc_id')}]"
             )
-            by_item.setdefault(item, []).append((company, best))
+            by_item.setdefault(name, []).append((company, best))
 
     if compare_winner:
         lines.extend(_mark_winner(by_item, aggregation))
@@ -335,7 +345,13 @@ def _mark_aggregate(fact_rows: list[dict], aggregation: str, *,
 
 
 def _mark_winner(by_item: dict[str, list[tuple[str, dict]]], aggregation: str) -> list[str]:
-    """항목별로 회사 간 승자를 계산한다. 모델은 이 줄을 옮겨 적기만 한다."""
+    """항목별로 회사 간 승자를 계산한다. 모델은 이 줄을 옮겨 적기만 한다.
+
+    **단위가 다르면 원으로 환산해서** 견준다. 환산이 불가능한 단위끼리는
+    (주 vs 원 처럼) 아예 비교하지 않는다 — 틀린 `▶▶` 는 없는 것보다 나쁘다.
+    실측(2026-09-01): 하이브 발행가액 172,467원과 에스엠 신주 1,230,000주를
+    견줘 "에스엠이 더 크다" 고 못 박고 있었다.
+    """
     smaller = aggregation == "min"
     out: list[str] = []
     for item, pairs in by_item.items():
@@ -346,31 +362,46 @@ def _mark_winner(by_item: dict[str, list[tuple[str, dict]]], aggregation: str) -
                 uniq[company] = row
         if len(uniq) < 2:
             continue
-        ranked = sorted(uniq.items(), key=lambda kv: kv[1]["value_num"], reverse=not smaller)
-        top_company, top_row = ranked[0]
-        second_company, second_row = ranked[1]
-        if top_row["value_num"] == second_row["value_num"]:
-            names = ", ".join(c for c, _r in ranked
-                              if _r["value_num"] == top_row["value_num"])
+
+        units = {unit_of(row) for row in uniq.values()}
+        if len(units) == 1:
+            unit = next(iter(units))
+            scale = {c: 1.0 for c in uniq}
+        else:
+            # 단위가 갈린다 — 전부 원으로 환산할 수 있을 때만 비교한다.
+            multipliers = {c: unit_multiplier(unit_of(r)) for c, r in uniq.items()}
+            if any(m is None for m in multipliers.values()):
+                continue
+            unit, scale = "원", {c: float(m) for c, m in multipliers.items()}
+
+        def _weight(company: str) -> float:
+            return uniq[company]["value_num"] * scale[company]
+
+        ranked = sorted(uniq, key=_weight, reverse=not smaller)
+        top, second = ranked[0], ranked[1]
+        if _weight(top) == _weight(second):
+            names = ", ".join(c for c in ranked if _weight(c) == _weight(top))
             out.append(f"▶▶ {item} 비교 결과: 동일 ({names})")
             continue
         word = "작다" if smaller else "크다"
-        gap = abs(top_row["value_num"] - second_row["value_num"])
+        gap = abs(_weight(top) - _weight(second))
+        # 표시하는 숫자와 '차이' 를 같은 값에서 뽑는다. 예전에는 원문 표기
+        # `(329,783)` 를 찍고 차이는 부호가 반영된 -329,783 으로 계산해
+        # 두 수를 빼도 그 차이가 안 나왔다(2026-09-01 발견).
         out.append(
-            f"▶▶ {item} 비교 결과: {top_company}가 더 {word}"
-            f" ({_fact_value(top_row)} vs {_fact_value(second_row)}, 차이 {gap:,.0f})"
+            f"▶▶ {item} 비교 결과: {top}가 더 {word}"
+            f" ({_weight(top):,.0f}{unit} vs {_weight(second):,.0f}{unit},"
+            f" 차이 {gap:,.0f}{unit})"
         )
         # 자릿수가 크면 사람이 읽는 단위로도 적어 준다. 환산도 파이썬이 한다.
         readable = [
-            f"{company} {describe_amount(row['value_num'], row.get('value_unit') or '원')}"
-            for company, row in ranked[:3]
-            if describe_amount(row["value_num"], row.get("value_unit") or "원")
+            f"{company} {text}" for company in ranked[:3]
+            if (text := describe_amount(uniq[company]["value_num"], unit_of(uniq[company])))
         ]
-        if readable and abs(top_row["value_num"]) >= 100_000_000:
+        if readable and abs(_weight(top)) >= 100_000_000:
             out.append("▶▶ 단위 환산: " + " / ".join(readable))
         if len(ranked) > 2:
-            order = " > ".join(c for c, _r in ranked)
-            out.append(f"▶▶ {item} 순위: {order}")
+            out.append(f"▶▶ {item} 순위: " + " > ".join(ranked))
     return out
 
 

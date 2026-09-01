@@ -33,6 +33,8 @@ _UNIT_MULTIPLIER: tuple[tuple[str, int], ...] = (
     ("조원", 1_000_000_000_000),
     ("십억원", 1_000_000_000),
     ("억원", 100_000_000),
+    # `천만원` 이 없으면 부분 문자열 `만원` 이 먼저 걸려 1,000배 작게 읽는다.
+    ("천만원", 10_000_000),
     ("백만원", 1_000_000),
     ("십만원", 100_000),
     ("만원", 10_000),
@@ -98,6 +100,14 @@ def format_korean_amount(won: float, *, max_terms: int = 2) -> str:
     return f"{sign}{text}원" if not text.endswith("원") else f"{sign}{text}"
 
 
+def _plain(value: float) -> str:
+    """원래 값을 그대로 적는다. 소수를 반올림해 버리면 괄호 안 숫자가
+    앞의 환산과 어긋난다 — `1조 5,000억원(2조원)` 같은 줄이 나왔다."""
+    if float(value).is_integer():
+        return f"{value:,.0f}"
+    return f"{value:,.4f}".rstrip("0").rstrip(".")
+
+
 def describe_amount(value: float, unit: str | None) -> str:
     """표의 값과 단위를 사람이 읽는 금액으로. 단위를 모르면 빈 문자열.
 
@@ -107,7 +117,7 @@ def describe_amount(value: float, unit: str | None) -> str:
     if won is None:
         return ""
     unit_name = normalize_unit_text(unit)
-    return f"{format_korean_amount(won)}({value:,.0f}{unit_name})"
+    return f"{format_korean_amount(won)}({_plain(value)}{unit_name})"
 
 
 # --- 비율 -------------------------------------------------------------------
@@ -124,11 +134,22 @@ def ratio_variants(value: float) -> list[float]:
     return out
 
 
+def _close(a: float, b: float, rel_tol: float) -> bool:
+    return abs(a - b) <= max(abs(a), abs(b)) * rel_tol + 1e-12
+
+
 def same_ratio(a: float, b: float, *, rel_tol: float = 1e-6) -> bool:
-    """두 값이 같은 비율인가 (100배 차이를 같다고 본다)."""
-    for candidate in ratio_variants(a):
-        if abs(candidate - b) <= max(abs(b), abs(candidate)) * rel_tol + 1e-12:
-            return True
+    """두 값이 같은 비율인가. `0.0430` 과 `4.30%` 를 같다고 본다.
+
+    100배를 **양방향으로** 열어 두면 `4.3` 과 `430` 도 같아진다. 소수 표기
+    쪽(1 미만)이 100배 작은 경우만 인정한다(2026-09-01 좁힘).
+    """
+    if _close(a, b, rel_tol):
+        return True
+    if abs(a) < 1 and _close(a * 100, b, rel_tol):
+        return True
+    if abs(b) < 1 and _close(b * 100, a, rel_tol):
+        return True
     return False
 
 

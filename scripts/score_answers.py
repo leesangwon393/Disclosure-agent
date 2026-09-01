@@ -44,6 +44,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from disclosure_rag.common.korean_number import format_korean_amount  # noqa: E402
+
 logger = logging.getLogger("score_answers")
 
 # 파이프라인이 실제로 내보내는 거부 문구. **세 곳(abstention/scope_gate/ask)의
@@ -131,9 +133,27 @@ def load_correction_groups(corpus_root: str) -> dict[str, str]:
     except Exception as e:  # noqa: BLE001
         logger.warning("정정 체인 적재 실패(%s) — 문서 ID 로만 대조한다", type(e).__name__)
         return {}
-    groups = {doc_id: rec.correction_group_id for doc_id, rec in index.items()}
-    logger.info("정정 체인 %d문서 / %d그룹", len(groups), len(set(groups.values())))
+    # 부모를 **추정으로** 이어붙인 문서는 체인으로 인정하지 않는다.
+    # `build_correction_index` 는 후보가 겹치면 제목 유사도로 부모를 고르는데
+    # (로그에 score=50.0 까지 나온다), 그렇게 묶인 삼성E&A 그룹은 계약상대도
+    # 계약금액도 다른 별개 계약 21건이었다. 그걸 같은 근거로 인정하면
+    # "2025년을 물었는데 2023년 문서를 가져와도 정답" 이 된다(2026-09-01).
+    trusted = {"manifest_key", "rule", "manual_override", "original"}
+    groups = {doc_id: rec.correction_group_id for doc_id, rec in index.items()
+              if rec.resolution_source in trusted}
+    logger.info("정정 체인 %d문서 / %d그룹 (추정 링크 %d문서 제외)",
+                len(groups), len(set(groups.values())), len(index) - len(groups))
     return groups
+
+
+def chain_members(gold_ids, groups: dict[str, str] | None) -> set[str]:
+    """정답 문서와 **같은 체인에 속한 문서 전부**. 순위 지표도 같은 기준으로
+    재야 라벨과 지표가 어긋나지 않는다."""
+    gold_ids = set(gold_ids or ())
+    if not groups or not gold_ids:
+        return gold_ids
+    wanted = {groups.get(d, d) for d in gold_ids}
+    return gold_ids | {doc for doc, gid in groups.items() if gid in wanted}
 
 
 def evidence_hit(gold_ids, got_ids, groups: dict[str, str] | None = None) -> bool:
@@ -158,16 +178,31 @@ def evidence_hit(gold_ids, got_ids, groups: dict[str, str] | None = None) -> boo
 # 그런데 지금 채점기는 숫자만 비교해서 **단위 누락이 지표에 전혀 안 보인다**.
 # 실측(2026-09-01): 숫자를 묻는 189문항 중 33문항(17%)이 단위 없이 답했다.
 
-_UNIT_WORDS = ("원", "%", "퍼센트", "주", "건", "명", "개", "배", "달러", "USD",
-               "포인트", "억", "조", "만", "천", "년", "월", "일", "시간", "㎡", "m2")
+# 단위는 **그 숫자 바로 뒤에** 붙어 있어야 한다. 본문 아무 데나 있는 글자를
+# 세면 "2024년 매출은 3,112,850 입니다" 가 단위를 적은 것으로 잡힌다 —
+# 실측으로 272건 중 266건(97.8%)이 통과해 지표가 아무것도 못 걸렀다
+# (2026-09-01 교차 검수).
+_VALUE_UNITS = ("원", "천원", "만원", "백만원", "십억원", "억원", "조원",
+                "%", "％", "퍼센트", "%p", "포인트", "주", "건", "명", "개",
+                "배", "달러", "USD", "톤", "kg", "㎡", "m2", "억", "조", "만", "천")
+# 값이 아니라 시점·차수를 가리키는 꼬리. 이건 단위로 세지 않는다.
+_ORDINAL_TAIL = ("년", "월", "일", "분기", "기", "차", "회", "번", "호", "항")
+_NUM_WITH_TAIL = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*([^\s\d]{0,6})")
 
 
 def unit_stated(answer: str) -> int | None:
-    """답변이 단위를 적었는가. 숫자가 없으면 해당 없음(None)."""
-    body = _body_only(answer)
-    if not _NUM.search(body):
-        return None
-    return int(any(w in body for w in _UNIT_WORDS))
+    """답변이 **제시한 값에** 단위를 붙였는가. 값이 없으면 해당 없음(None).
+
+    시점(2024년)·차수(제55기)는 값이 아니므로 건너뛰고, 그 뒤 **첫 번째로
+    나오는 실제 값**에 단위가 붙었는지 본다.
+    """
+    body = _strip_ordinals(_body_only(answer))
+    for m in _NUM_WITH_TAIL.finditer(body):
+        tail = m.group(2)
+        if any(tail.startswith(w) for w in _ORDINAL_TAIL):
+            continue
+        return int(any(tail.startswith(u) for u in _VALUE_UNITS))
+    return None
 
 
 # ------------------------------------------------------------------- 서술형 대조
@@ -351,6 +386,15 @@ _AMOUNT_REL_TOL = Decimal("5E-4")   # `3조 1,128억` 처럼 아래 자리를 �
 _UNIT_SCALES = (1, 1_000, 10_000, 1_000_000, 100_000_000, 1_000_000_000_000)
 
 
+# `제3조 제1항`, `제55기` 의 숫자는 답변이 제시한 값이 아니다. 정답이 한두
+# 자리 수일 때 이것들이 통째로 정답 처리됐다(2026-09-01 교차 검수).
+_ORDINAL = re.compile(r"제\s*\d+\s*(?:조|항|호|기|절|장|편|차|회|기분기)?")
+
+
+def _strip_ordinals(text: str) -> str:
+    return _ORDINAL.sub(" ", text or "")
+
+
 def _percent_decimals(text: str) -> set:
     """`4.30%` 처럼 % 가 붙은 수만."""
     out = set()
@@ -364,6 +408,7 @@ def _percent_decimals(text: str) -> set:
 def _read_run(run: str):
     """`3조 1,128억` -> 3_112_800_000_000. 한국어 자릿수 읽기 규칙 그대로."""
     total = section = pending = Decimal(0)
+    last_unit = ""
     for m in _KO_TOKEN.finditer(run):
         num, unit = m.group(1), m.group(2)
         if num is not None:
@@ -374,12 +419,26 @@ def _read_run(run: str):
         elif unit in _SMALL_UNITS:
             section += (pending or Decimal(1)) * _SMALL_UNITS[unit]
             pending = Decimal(0)
+            last_unit = unit
         else:
             # `3천억` 은 (3,000 + 0)억이지 (3,000 + 1)억이 아니다.
             amount = section + pending
             total += (amount if amount else Decimal(1)) * _BIG_UNITS[unit]
             section = pending = Decimal(0)
+            last_unit = unit
+    if pending and last_unit in ("조", "억"):
+        # `1,000억 2025년` 의 2025 는 금액의 끝자리가 아니라 다음 낱말이다.
+        pending = Decimal(0)
     return total + section + pending
+
+
+# 자릿수 글자가 금액이 아닌 자리에 쓰이는 경우. 이걸 안 거르면 `제3조` 가
+# 3조원이 되고 `10만 주` 가 10만원이 된다(2026-09-01 교차 검수).
+_ORDINAL_HEAD = ("제",)
+_COUNTING_TAIL = ("주", "명", "개", "건", "장", "회", "차", "곳", "대", "석",
+                  "호", "항", "년", "월", "일", "기", "분기", "번", "단")
+# 문장 경계와 열거 쉼표. 이걸 안 자르면 `5조. 3천억` 이 5조3천억이 된다.
+_RUN_SPLIT = re.compile(r"\.\s+|,\s+|\.$")
 
 
 def korean_amounts(text: str) -> set:
@@ -388,33 +447,67 @@ def korean_amounts(text: str) -> set:
         `3조 1,128억원`   -> 3_112_800_000_000
         `3천억원`         ->   300_000_000_000
         `255,698,325천원` -> 255_698_325_000
+
+    금액이 아닌 것은 읽지 않는다: `제3조`, `10만 주`, `약 3만 명`, `제55기`.
     """
+    text = text or ""
     out = set()
-    for m in _KO_RUN.finditer(text or ""):
-        run = m.group(0)
-        if not any(ch in run for ch in "조억만천백십"):
-            continue
-        if not any(ch.isdigit() for ch in run):
-            continue
-        value = _read_run(run)
+    for m in _KO_RUN.finditer(text):
+        start, end = m.start(), m.end()
+        if start and text[start - 1] in _ORDINAL_HEAD:
+            continue                      # 제3조 / 제55기 — 조문·기수
+        run_text = m.group(0)
+        tail = text[end:end + 2]
+        if any(tail.startswith(w) for w in _COUNTING_TAIL):
+            stripped = run_text.rstrip()
+            if not stripped or stripped[-1] not in "조억만천백십":
+                # `1,000억 2025년` — 뒤의 2025 는 금액이 아니라 다음 낱말이다.
+                # 앞의 1,000억 은 살린다.
+                run_text = re.sub(r"[\d,]+\s*$", "", run_text)
+            else:
+                continue                  # `10만 주` / `3만 명` — 세는 단위
+        for run in _RUN_SPLIT.split(run_text):
+            if not any(ch in run for ch in "조억만천백십"):
+                continue
+            if not any(ch.isdigit() for ch in run):
+                continue
+            value = _read_run(run)
+            if value:
+                out.add(value)
+    return out
+
+
+def _renderings(won: Decimal) -> set:
+    """이 금액을 한국식으로 읽었을 때 나올 수 있는 값들.
+
+    `3,112,850,000,000` -> {그 값, `3조원`, `3조 1,128억원`, `3조 1,128억 5,000만원`}
+
+    예전에는 상대오차 5e-4 창으로 견줬는데, 그 창이 서로 다른 두 값을
+    같다고 했다 — `25,575,912`(x1만)과 `255,698,325천원` 이 정답 처리됐다.
+    표기를 그대로 만들어 **정확히** 비교한다(2026-09-01 좁힘).
+    """
+    out = {won}
+    for terms in (1, 2, 3, 4):
+        value = _read_run(format_korean_amount(float(won), max_terms=terms))
         if value:
             out.add(value)
     return out
 
 
-def _amount_equal(gold: Decimal, answer_won: set) -> bool:
-    """정답 수치에 단위를 곱한 값이 답변의 한국식 금액과 같은가.
+def _amount_equal(gold: Decimal, gold_text: str, answer_won: set) -> bool:
+    """정답 수치에 표 단위를 곱한 값이 답변의 한국식 금액과 같은가.
 
-    정답지에는 단위가 안 적혀 있다. 그래서 천/만/백만/억/조 를 모두 대본다 —
-    자릿수가 긴 수라 우연히 맞을 확률은 낮다.
+    정답지에는 단위가 안 적혀 있어 천/만/백만/억/조 를 모두 대본다. 대신
+    **자릿수가 짧은 정답에는 적용하지 않는다** — `3` 이 `제3조`·`3만 명`·
+    `3천억원` 에 전부 걸린다(2026-09-01 교차 검수에서 확인).
     """
     if not answer_won or gold == 0:
         return False
+    if sum(ch.isdigit() for ch in gold_text or "") < 4:
+        return False
     for scale in _UNIT_SCALES:
-        target = gold * scale
-        for got in answer_won:
-            if abs(target - got) <= abs(target) * _AMOUNT_REL_TOL:
-                return True
+        if _renderings(gold * scale) & answer_won:
+            return True
     return False
 
 
@@ -434,7 +527,8 @@ def _answer_hit(answer: str, golds: list[str]) -> bool:
         return False
     body = _body_only(answer)
     norm_answer = _norm(body)
-    answer_decimals = {d for n in _numbers(body) if (d := _as_decimal(n)) is not None}
+    answer_decimals = {d for n in _numbers(_strip_ordinals(body))
+                       if (d := _as_decimal(n)) is not None}
     answer_percents = _percent_decimals(body)
     answer_won = korean_amounts(body)
     for g in golds:
@@ -453,7 +547,7 @@ def _answer_hit(answer: str, golds: list[str]) -> bool:
             if "%" in (g or "") and gd / 100 in answer_decimals:
                 return True
             # 금액: 정답지 `3,112,850` <-> 답변 `3조 1,128억원`
-            if _amount_equal(gd, answer_won):
+            if _amount_equal(gd, g, answer_won):
                 return True
         elif len(ng) >= 2 and ng in norm_answer:
             # 비수치 정답(계약상대·사유 등)은 포함 여부로 본다.
@@ -880,13 +974,16 @@ def _run_retrieval(bundle, rows: list[dict], k: int, *,
 
         retrieved_ids = [c.report_id for c, _ in hits]
         hit_evidence = evidence_hit(gold_ids, retrieved_ids, groups)
+        # 순위 지표도 같은 기준으로 잰다. 라벨은 '근거만도달' 인데
+        # context_recall 이 0 으로 찍히면 진단이 서로 어긋난다.
+        rank_gold = chain_members(gold_ids, groups)
         # 근거만 보면 답할 수 있었는가 = 정답 문자열이 회수된 조각 안에 있는가
         ceiling = any(_norm(g) and _norm(g) in _norm(c.raw_text) for c, _ in hits for g in golds)
 
         # 순위 품질. evidence_hit 은 "가져왔는가"(0/1)만 보므로, 정답 문서를
         # 10등에 놓은 검색과 1등에 놓은 검색이 같은 점수를 받는다. 아래 지표들이
         # 그 차이를 드러낸다. gold ID 만 있으면 계산되므로 LLM 은 쓰지 않는다.
-        rank = first_relevant_rank(retrieved_ids, gold_ids)
+        rank = first_relevant_rank(retrieved_ids, rank_gold)
 
         out.append({
             "id": row.get("id"), "query": row["query"], "company": row.get("company"),
@@ -896,13 +993,13 @@ def _run_retrieval(bundle, rows: list[dict], k: int, *,
             "evidence_hit": int(hit_evidence), "answer_ceiling": int(ceiling),
             # context_recall = 회수된 gold 문서 / 전체 gold 문서.
             # evidence_hit(하나라도 걸리면 1)과 달리 부분 회수를 구분한다.
-            "context_recall": round(recall_at_k(retrieved_ids, gold_ids, k), 4),
+            "context_recall": round(recall_at_k(retrieved_ids, rank_gold, k), 4),
             # context_precision = top-k 조각 중 gold 문서에서 나온 비율(예산 효율)
-            "context_precision": round(precision_at_k(retrieved_ids, gold_ids, k), 4),
+            "context_precision": round(precision_at_k(retrieved_ids, rank_gold, k), 4),
             # context_ap = 순위 반영 정밀도. 앞자리에서 맞힐수록 높다
-            "context_ap": round(average_precision_at_k(retrieved_ids, gold_ids, k), 4),
-            "mrr": round(reciprocal_rank(retrieved_ids, gold_ids), 4),
-            "ndcg_at_10": round(ndcg_at_k(retrieved_ids, gold_ids, 10), 4),
+            "context_ap": round(average_precision_at_k(retrieved_ids, rank_gold, k), 4),
+            "mrr": round(reciprocal_rank(retrieved_ids, rank_gold), 4),
+            "ndcg_at_10": round(ndcg_at_k(retrieved_ids, rank_gold, 10), 4),
             # 못 찾으면 0. 평균내지 말 것 — 집계에서 '찾은 것만'의 중앙값을 쓴다
             "first_gold_rank": rank or 0,
             "label": "상한도달" if ceiling else ("근거만도달" if hit_evidence else "검색실패"),
@@ -960,7 +1057,7 @@ def _run_full(bundle, tools, extractor, rows: list[dict], *, max_iterations: int
             "gold": golds[0] if golds else "", "n_gold": len(golds),
             "answer": answer.replace("\n", " ")[:600],
             "answer_hit": int(hit), "evidence_hit": int(hit_evidence),
-            "citation_hit": int(bool(gold_ids & {r for r in gold_ids if r in answer})),
+            "citation_hit": int(evidence_hit(gold_ids, cited, groups)),
             "refusal": int(refusal), "unit_stated": unit_stated(answer),
             "label": _label(hit, hit_evidence, refusal),
             "numbers_grounded": int(bool(validation and validation.numbers_grounded)),
@@ -1251,13 +1348,20 @@ def _rescore(src: Path, gold_rows: list[dict], out_dir: Path, mode: str,
         refusal = _is_refusal(answer)
         # 파이프라인이 실제로 회수한 문서 ID 가 남아 있으면 근거 판정을 다시
         # 한다. 없으면 이전 실행의 값을 그대로 쓴다.
+        # 회수 문서 ID 가 실제로 남아 있을 때만 근거 판정을 다시 한다.
+        # `is not None` 으로 보면 ID 를 안 남긴 옛 폴더의 **빈 집합**까지
+        # 통과해 evidence_hit 이 전부 0 이 됐다 — 검색실패/답변실패 구분이
+        # 통째로 뒤집혔다(2026-09-01 교차 검수).
         got = seen_ids.get(rid) or seen_ids.get(query)
-        if got is not None:
+        if got:
             hit_evidence = evidence_hit(_gold_report_ids(gold_row), got, groups)
         else:
             hit_evidence = bool(r.get("evidence_hit"))
         r.update({
             "evidence_hit": int(hit_evidence), "unit_stated": unit_stated(answer),
+            # 다음 재채점도 같은 판정을 할 수 있게 ID 를 그대로 넘긴다.
+            # 예전에는 여기서 사라져 재채점을 두 번 하면 지표가 무너졌다.
+            "cited_ids": sorted(got or []), "retrieved_ids": sorted(got or []),
             "answer": answer.replace("\n", " ")[:600], "answer_full": answer,
             "gold": golds[0] if golds else "", "n_gold": len(golds),
             "answer_hit": int(hit),
@@ -1358,7 +1462,10 @@ def main() -> int:
         rows = rows[: args.limit]
     logger.info("채점 대상 %d문항 (%s)", len(rows), args.gold)
 
-    if args.mode == "full" and len(rows) > 80 and not args.yes:
+    if args.rescore and args.mode == "full":
+        # 재채점은 HCX 호출이 0회다. 아래 비용 게이트에 걸리면 안 된다.
+        pass
+    elif args.mode == "full" and len(rows) > 80 and not args.yes:
         est_sec = len(rows) * 15
         print(f"\n[중단] full 모드 {len(rows)}문항 = HCX 약 {len(rows) * 3}회 호출, "
               f"예상 {est_sec // 60}분 {est_sec % 60}초. 크레딧을 씁니다.\n"
