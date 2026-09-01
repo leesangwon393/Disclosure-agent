@@ -198,10 +198,19 @@ def load_bundle(
         from disclosure_rag.facts.multi_store import MultiFactStore
 
         candidates = [root / "facts" / "facts.sqlite"]
-        for name in ("facts_periodic_v2", "facts_periodic"):
+        # 정기공시 수치사전은 여러 판이 남아 있다. **최신 판을 먼저** 본다.
+        # v4 = 제3자(최대주주 등) 수치에 주인 이름을 붙인 판(2026-09-01).
+        # FACTS_PERIODIC 환경변수로 특정 판을 지목할 수 있다(A/B 비교용).
+        import os
+        forced = os.environ.get("FACTS_PERIODIC", "").strip()
+        names = ([forced] if forced else
+                 ["facts_periodic_v4", "facts_periodic_v3",
+                  "facts_periodic_v2", "facts_periodic"])
+        for name in names:
             path = root / name / "facts.sqlite"
             if path.exists():
                 candidates.append(path)
+                logger.info("[INDEX] 정기공시 수치사전: %s", name)
                 break
         fact_store = MultiFactStore.from_paths(candidates)
         if fact_store is not None:
