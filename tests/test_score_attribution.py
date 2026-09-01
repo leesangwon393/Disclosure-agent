@@ -65,3 +65,17 @@ def test_a_made_up_document_id_is_separated_from_foreign_companies():
 def test_no_citation_at_all_is_zero_coverage():
     r = grade_one("확인할 수 없습니다.", ["삼성전자", "삼성SDI"], OWNER)
     assert r["coverage"] == 0.0 and r["n_cited_docs"] == 0
+
+
+def test_pipeline_citations_win_over_the_answer_text():
+    """모델이 인용 형식을 안 지켜도 채점은 정확해야 한다.
+
+    첫 측정에서 8문항이 '근거 0건'으로 나왔는데 실제로는 제대로 답한
+    문항이었다. 모델이 "근거: [EVIDENCE 1]" 이라고만 썼기 때문이다.
+    채점기가 본문 형식에 매달리면 시스템이 아니라 채점기를 측정하게 된다.
+    """
+    answer = "삼성전자 300조, 삼성SDI 20조.\n근거: [EVIDENCE 1], [EVIDENCE 2]"
+    assert cited_ids(answer) == []          # 본문만 보면 0건
+    r = grade_one(answer, ["삼성전자", "삼성SDI"], OWNER,
+                  pipeline_ids=["periodic_20250311000001", "periodic_20250311000002"])
+    assert r["coverage"] == 1.0 and r["clean"] == 1

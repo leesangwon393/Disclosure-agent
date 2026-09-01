@@ -61,8 +61,16 @@ def cited_ids(answer: str) -> list[str]:
     return seen
 
 
-def grade_one(answer: str, companies: list[str], owner: dict[str, str]) -> dict:
-    ids = cited_ids(answer)
+def grade_one(answer: str, companies: list[str], owner: dict[str, str],
+              *, pipeline_ids: list[str] | None = None) -> dict:
+    """`pipeline_ids` 가 있으면 그것을 쓴다 — 본문 파싱보다 정확하다.
+
+    2026-09-01 첫 측정에서 28문항 중 8문항이 '근거 0건'으로 나왔는데, 실제로는
+    제대로 답한 문항이었다. 모델이 프롬프트 지시("근거: report_id(...)")를
+    안 지키고 "근거: [EVIDENCE 1]" 이라고만 썼기 때문이다. 채점기가 본문
+    형식에 매달리면 시스템이 아니라 채점기를 측정하게 된다.
+    """
+    ids = list(pipeline_ids) if pipeline_ids else cited_ids(answer)
     cited_companies = [owner.get(i, "?") for i in ids]
     covered = [c for c in companies if c in cited_companies]
     # 질문에 없는 회사 문서. manifest 에 없는 ID(?)는 따로 센다 — 지어낸
@@ -103,7 +111,7 @@ def main() -> int:
         for line in f:
             if line.strip():
                 row = json.loads(line)
-                answers[row.get("id")] = row.get("answer") or ""
+                answers[row.get("id")] = row
 
     owner = load_manifest(Path(args.manifest))
 
@@ -111,9 +119,12 @@ def main() -> int:
     for qid, g in gold.items():
         if qid not in answers:
             continue
+        row = answers[qid]
         rows.append({"id": qid, "n_asked": g["n_companies"], "note": g.get("note", ""),
                      "query": g["query"][:70],
-                     **grade_one(answers[qid], g["companies"], owner)})
+                     "source": "pipeline" if row.get("cited_ids") else "본문파싱",
+                     **grade_one(row.get("answer") or "", g["companies"], owner,
+                                 pipeline_ids=row.get("cited_ids"))})
 
     if not rows:
         print("대조할 답변이 없다 — --answers 경로를 확인하라.")
@@ -127,6 +138,10 @@ def main() -> int:
     print(f"  회사 커버리지 (질문한 회사 문서를 인용한 비율)  {cov:6.1%}")
     print(f"  완전 정상 (전부 인용 + 남의 회사 없음)          {clean}/{n} = {clean/n:.1%}")
     print(f"  남의 회사 문서를 인용한 문항                    {len(foreign_rows)}건")
+    parsed = sum(1 for r in rows if r["source"] == "본문파싱")
+    if parsed:
+        print(f"  ⚠️  {parsed}문항은 파이프라인 인용 기록이 없어 본문에서 긁었다 — "
+              f"과소평가일 수 있다(옛 결과 폴더).")
 
     print(f"\n  회사 수별:")
     for k in sorted({r["n_asked"] for r in rows}):

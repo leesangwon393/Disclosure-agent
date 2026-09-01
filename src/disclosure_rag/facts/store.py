@@ -114,6 +114,7 @@ class FactStore:
         latest_only: bool = True,
         corrections_only: bool = False,
         numeric_only: bool = False,
+        exclude_other_party: bool = True,
         exact_only: bool = False,
         order_by: str = "date",
         limit: int = 20,
@@ -175,6 +176,27 @@ class FactStore:
             # 질문이 "[기재정정]..." 처럼 정정본을 지목했을 때만. 비정형 검색과
             # 조건을 맞춰 두 채널이 서로 다른 문서를 답하지 않게 한다.
             where.append("is_correction = 1")
+        if exclude_other_party:
+            # 「VII. 주주에 관한 사항」의 재무수치는 **그 회사 것이 아니다.**
+            #
+            # 사업보고서의 그 절에는 '최대주주 및 특수관계인 현황' 표가 있고,
+            # 거기에 최대주주 법인의 자산총계·부채총계·매출액이 실린다.
+            # 우리 추출기는 그것도 그대로 담았고, company 컬럼에는 **보고서를
+            # 낸 회사** 이름이 들어간다. 그래서 이런 일이 벌어졌다.
+            #
+            #   KB금융 자산총계 = 464,418      실제로는 국민연금공단의 값
+            #   신한지주 자산총계 = 464,418     같은 값
+            #   하나금융지주 자산총계 = 464,418  같은 값
+            #   POSCO홀딩스 자산총계 = 464,418  같은 값
+            #
+            # 네 회사의 최대주주가 모두 국민연금공단이라서 값이 똑같았다.
+            # 실측(2026-09-01): 재무 항목 9,262행 중 **6,820행(73.6%)** 이
+            # 여기서 나왔고 70개 회사 중 53곳이 영향을 받는다.
+            #
+            # [FACT] 블록은 '공시 표에서 직접 뽑은 확정값'으로 제시되므로
+            # 모델이 의심 없이 쓴다. 비정형 근거보다 더 위험하다.
+            where.append("(section_path IS NULL OR section_path NOT LIKE ?)")
+            params.append("%주주에 관한 사항%")
 
         def _run(key_clause: str | None, key_params: list) -> list[dict]:
             w = list(where) + ([key_clause] if key_clause else [])

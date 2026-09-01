@@ -670,6 +670,7 @@ def _run_v2(ask, rows: list[dict]) -> list[dict]:
             "answer_mode": getattr(plan, "answer_mode", ""),
             "task": getattr(plan, "task", ""),
             "error": error, "elapsed_sec": round(elapsed, 2),
+            "cited_ids": sorted(cited), "retrieved_ids": sorted(retrieved),
             # 지연 분해 — 어디가 느린지 추정 대신 측정값으로 본다(ms)
             **{f"ms_{name}": round(value, 1)
                for name, value in timing.items() if name != "searches"},
@@ -920,10 +921,17 @@ def _write(out_dir: Path, config: dict, metrics: dict, rows: list[dict]) -> None
         with (out_dir / "answers.jsonl").open("w", encoding="utf-8") as f:
             for r in rows:
                 f.write(json.dumps({"id": r.get("id"), "query": r.get("query"),
-                                    "answer": r.get("answer_full") or ""},
+                                    "answer": r.get("answer_full") or "",
+                                    # 답변 본문의 인용 형식은 모델이 지키지 않을 때가
+                                    # 많다("[EVIDENCE 1]"). 파이프라인이 실제로 붙인
+                                    # 근거 ID 를 같이 남겨 채점이 본문 파싱에
+                                    # 의존하지 않게 한다.
+                                    "cited_ids": r.get("cited_ids") or [],
+                                    "retrieved_ids": r.get("retrieved_ids") or []},
                                    ensure_ascii=False) + "\n")
     if rows:
-        csv_rows = [{k: v for k, v in r.items() if k != "answer_full"} for r in rows]
+        _SKIP = {"answer_full", "cited_ids", "retrieved_ids"}
+        csv_rows = [{k: v for k, v in r.items() if k not in _SKIP} for r in rows]
         # 열 이름은 **모든 행의 합집합**이다. 첫 행 기준으로 잡으면, 조기
         # 종료한 문항이 1번으로 오는 순간 뒤 행의 ms_rerank 같은 열에서
         # DictWriter 가 ValueError 로 죽는다 — 측정 전체가 날아간다.
