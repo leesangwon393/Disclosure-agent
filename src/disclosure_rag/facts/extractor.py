@@ -327,6 +327,67 @@ def _iter_kv(sections: Iterable[SectionNode]):
                 yield sec, child
 
 
+def _iter_nodes(sections: Iterable[SectionNode]):
+    """절 안의 자식들을 **문서에 적힌 순서대로** 돌려준다.
+
+    `_iter_kv` 는 키-값 표만 준다. 그런데 최대주주 이름은 키-값 표가 아니라
+    **일반 표의 '명 칭' 열**에 있는 경우가 있다(한화에어로스페이스 등 66개
+    문서). 순서가 필요해서 따로 만들었다 — 이름이 먼저 나오고 재무현황이
+    뒤에 오기 때문이다.
+    """
+    for sec in sections:
+        for child in sec.children:
+            if isinstance(child, SectionNode):
+                yield from _iter_nodes([child])
+            else:
+                yield sec, child
+
+
+# 최대주주 이름이 실린 일반 표를 알아보는 표지.
+_OWNER_TABLE_HINTS = ("최대주주", "법인 기본정보", "법인기본정보")
+# 그 표에서 이름이 들어 있는 열의 머리글.
+_OWNER_COLUMN_HEADERS = ("명칭", "명 칭", "법인명", "상호", "회사명", "단체명")
+
+
+def _owner_from_table(node) -> str | None:
+    """일반 표에서 최대주주 이름을 꺼낸다.
+
+    실제 형태(한화에어로스페이스 분기보고서):
+
+        title_hint = "나. 최대주주의 기본정보(1) 법인 기본정보"
+        머리글      명 칭 | 출자자수(명) | 대표이사 ... | 최대주주 ...
+        본문        (주)한화 | 74,702 | 김동관 ...
+
+    바로 뒤에 "(2) 최대주주(법인 또는 단체)의 최근 결산기 재무현황" 표가
+    이름 없이 붙는다. 이 표를 안 읽으면 그 재무현황이 한화에어로스페이스
+    자신의 값으로 저장된다.
+    """
+    hint = (getattr(node, "title_hint", None) or "")
+    rows = getattr(node, "rows", None)
+    if not rows or not any(marker in hint for marker in _OWNER_TABLE_HINTS):
+        return None
+    # 이름 열의 위치를 머리글에서 찾는다.
+    col = None
+    for row in rows[:3]:
+        for cell in row:
+            text = (getattr(cell, "text", "") or "").replace(" ", "")
+            if text in (h.replace(" ", "") for h in _OWNER_COLUMN_HEADERS):
+                col = getattr(cell, "col", None)
+                break
+        if col is not None:
+            break
+    if col is None:
+        return None
+    for row in rows:
+        for cell in row:
+            if getattr(cell, "col", None) != col or getattr(cell, "is_header", False):
+                continue
+            value = (getattr(cell, "text", "") or "").strip()
+            if value and value not in _EMPTY_VALUES and value != "-":
+                return value
+    return None
+
+
 def extract_facts(
     parsed: ParsedDocument, row: ManifestRow, correction: CorrectionRecord,
     *, filter_stats: MutableMapping[str, int] | None = None,
@@ -338,10 +399,19 @@ def extract_facts(
     carried_owner: str | None = None
     carried_section: tuple[str, ...] | None = None
 
-    for section, kv in _iter_kv(parsed.sections):
+    for section, node in _iter_nodes(parsed.sections):
         section_key = tuple(section.path)
         if section_key != carried_section:
             carried_owner, carried_section = None, section_key
+
+        if not isinstance(node, KeyValueNode):
+            # 키-값 표가 아니면 값을 뽑지 않는다. 다만 최대주주 이름이 실린
+            # 일반 표면 이름만 기억해 둔다 — 뒤에 이름 없는 재무현황이 온다.
+            found = _owner_from_table(node)
+            if found:
+                carried_owner = found
+            continue
+        kv = node
 
         # 표 하나를 통째로 보고 주인을 먼저 정한다. 행 단위로는 알 수 없다 —
         # 주인 이름은 표의 다른 행에 적혀 있기 때문이다.
