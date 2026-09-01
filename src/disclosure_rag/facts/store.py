@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS facts (
     field_code          TEXT,
     unit_code           TEXT,
     unit_value          TEXT,
-    section_path        TEXT
+    section_path        TEXT,
+    value_owner         TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_facts_company_key ON facts(company, key_norm);
 CREATE INDEX IF NOT EXISTS ix_facts_key         ON facts(key_norm);
@@ -54,7 +55,7 @@ _COLS = [
     "doc_id", "chunk_id", "company", "corp_code", "doc_group", "doc_subtype", "report_name",
     "filing_date", "period", "is_correction", "is_latest", "correction_group_id",
     "group_label", "key", "key_norm", "value_text", "value_num", "value_unit", "value_date",
-    "field_code", "unit_code", "unit_value", "section_path",
+    "field_code", "unit_code", "unit_value", "section_path", "value_owner",
 ]
 
 
@@ -63,6 +64,9 @@ _COLS = [
 OTHER_PARTY_FINANCIAL_KEYS = (
     "자산총계", "부채총계", "자본총계", "매출액", "영업이익", "당기순이익",
 )
+OTHER_PARTY_SECTION = "주주에 관한 사항"
+# 같은 표 안에서 그 수치의 주인 이름이 적혀 있는 항목.
+OWNER_NAME_KEY = "법인 또는 단체의 명칭"
 
 
 class FactStore:
@@ -72,7 +76,62 @@ class FactStore:
         # thread마다 SQLite connection을 하나씩 가진다. check_same_thread=False로
         # 하나를 공유하는 방식보다 동시 요청 사이의 cursor 충돌도 피할 수 있다.
         self._local = threading.local()
-        self.conn.executescript(_SCHEMA)
+        # 이미 만들어진 저장소는 건드리지 않는다. 예전에는 열 때마다
+        # CREATE TABLE/INDEX 를 다시 돌렸는데, 그건 **읽기 전용 artifacts 에서
+        # 기동을 죽이고** 구버전 스키마에서는 없는 컬럼으로 인덱스를 만들려다
+        # 실패한다(2026-09-01). 새로 만들 때만 스키마를 적용한다.
+        existing = self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='facts'"
+        ).fetchone()
+        if existing is None:
+            self.conn.executescript(_SCHEMA)
+
+    @property
+    def columns(self) -> frozenset[str]:
+        """이 저장소에 실제로 있는 컬럼.
+
+        **읽기만 한다.** 예전엔 없는 컬럼을 ALTER TABLE 로 붙이려 했는데 그건
+        틀린 설계였다(2026-09-01):
+          - 평가 서버의 artifacts 는 읽기 전용일 수 있다. 조회하려고 열었다가
+            쓰기를 시도하면 기동이 통째로 죽는다.
+          - 실제로 마운트된 디스크에서 "disk I/O error" 로 실패하면서
+            journal 파일만 남겼다.
+        구버전 DB 는 컬럼 없이 그대로 두고, 질의문을 컬럼 유무에 맞춰 짠다.
+        """
+        cached = getattr(self, "_columns", None)
+        if cached is None:
+            try:
+                cached = frozenset(r[1] for r in self.conn.execute("PRAGMA table_info(facts)"))
+            except sqlite3.Error:
+                cached = frozenset()
+            self._columns = cached
+        return cached
+
+    @property
+    def owner_by_chunk(self) -> dict[str, str]:
+        """chunk_id -> 그 표에 적힌 수치의 주인(최대주주 법인명).
+
+        「주주에 관한 사항」의 재무 표에는 값과 함께 '법인 또는 단체의 명칭'이
+        같은 조각 안에 들어 있다. 그걸 읽어 두면 **값을 버리지 않고도** 주인을
+        붙일 수 있다. 값을 막는 게 아니라 누구 것인지 적는 것이 맞는 해법이다.
+
+        코퍼스 전체에서 770개 조각뿐이라 메모리에 들고 있어도 된다. SQL 상관
+        서브쿼리로 매 조회마다 확인하면 100만 행 스캔이 되어 2분을 넘긴다
+        (2026-09-01 실측: 타임아웃).
+        """
+        cached = getattr(self, "_owner_by_chunk", None)
+        if cached is None:
+            cached = {}
+            try:
+                for row in self.conn.execute(
+                        "SELECT chunk_id, value_text FROM facts WHERE key = ?",
+                        (OWNER_NAME_KEY,)):
+                    if row["chunk_id"] and row["value_text"]:
+                        cached.setdefault(row["chunk_id"], row["value_text"])
+            except sqlite3.Error:  # 스키마가 다른 오래된 저장소
+                cached = {}
+            self._owner_by_chunk = cached
+        return cached
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -85,14 +144,15 @@ class FactStore:
 
     # ------------------------------------------------------------------ 적재
     def insert_many(self, facts: Iterable[Fact], *, batch: int = 2000) -> int:
-        sql = f"INSERT INTO facts ({','.join(_COLS)}) VALUES ({','.join('?' * len(_COLS))})"
+        cols = [c for c in _COLS if c in self.columns] or list(_COLS)
+        sql = f"INSERT INTO facts ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})"
         buf, n = [], 0
         for f in facts:
             d = f.model_dump()
             d["section_path"] = json.dumps(d.get("section_path") or [], ensure_ascii=False)
             d["is_correction"] = int(bool(d.get("is_correction")))
             d["is_latest"] = None if d.get("is_latest") is None else int(bool(d["is_latest"]))
-            buf.append(tuple(d.get(c) for c in _COLS))
+            buf.append(tuple(d.get(c) for c in cols))
             if len(buf) >= batch:
                 self.conn.executemany(sql, buf); n += len(buf); buf = []
         if buf:
@@ -121,7 +181,7 @@ class FactStore:
         latest_only: bool = True,
         corrections_only: bool = False,
         numeric_only: bool = False,
-        exclude_other_party: bool = True,
+        value_owner: str = "self",
         exact_only: bool = False,
         order_by: str = "date",
         limit: int = 20,
@@ -183,41 +243,43 @@ class FactStore:
             # 질문이 "[기재정정]..." 처럼 정정본을 지목했을 때만. 비정형 검색과
             # 조건을 맞춰 두 채널이 서로 다른 문서를 답하지 않게 한다.
             where.append("is_correction = 1")
-        if exclude_other_party:
-            # 「VII. 주주에 관한 사항」의 재무수치는 **그 회사 것이 아니다.**
-            #
-            # 사업보고서의 그 절에는 '최대주주 및 특수관계인 현황' 표가 있고,
-            # 거기에 최대주주 법인의 자산총계·부채총계·매출액이 실린다.
-            # 우리 추출기는 그것도 그대로 담았고, company 컬럼에는 **보고서를
-            # 낸 회사** 이름이 들어간다. 그래서 이런 일이 벌어졌다.
-            #
-            #   KB금융 자산총계 = 464,418      실제로는 국민연금공단의 값
-            #   신한지주 자산총계 = 464,418     같은 값
-            #   하나금융지주 자산총계 = 464,418  같은 값
-            #   POSCO홀딩스 자산총계 = 464,418  같은 값
-            #
-            # 네 회사의 최대주주가 모두 국민연금공단이라서 값이 똑같았다.
-            # 실측(2026-09-01): 재무 항목 9,262행 중 **6,820행(73.6%)** 이
-            # 여기서 나왔고 70개 회사 중 53곳이 영향을 받는다.
-            #
-            # [FACT] 블록은 '공시 표에서 직접 뽑은 확정값'으로 제시되므로
-            # 모델이 의심 없이 쓴다. 비정형 근거보다 더 위험하다.
-            # 섹션 전체가 아니라 **재무 항목만** 막는다. 같은 절에는
-            # '법인 또는 단체의 명칭'(= 최대주주 이름), 소유주식수, 지분율처럼
-            # 그 회사에 대한 정당한 사실도 들어 있다. 섹션을 통째로 날리면
-            # "KB금융의 최대주주는?" 에 Facts 가 빈손이 된다.
-            #
-            # 실측으로 확인한 것(2026-09-01): 이 절의 재무 항목 6,820행 중
-            # 129행은 '법인 또는 단체의 명칭' 행이 같은 chunk 에서 추출되지
-            # 않았는데, 그 값들도 회사끼리 똑같았다(POSCO홀딩스 영업이익
-            # 7,347 = KB금융 영업이익 7,347). 표지 유무와 무관하게 이 절의
-            # 재무 항목은 전부 남의 것이다.
-            where.append(
-                "(section_path IS NULL OR section_path NOT LIKE ?"
-                f" OR key NOT IN ({','.join('?' * len(OTHER_PARTY_FINANCIAL_KEYS))}))"
-            )
-            params.append("%주주에 관한 사항%")
-            params.extend(OTHER_PARTY_FINANCIAL_KEYS)
+        # ── 수치의 주인 ───────────────────────────────────────────────
+        # 「VII. 주주에 관한 사항」의 재무 항목은 **최대주주 법인의 값**이다.
+        # 그런데 company 컬럼에는 보고서를 낸 회사가 들어 있어서, 그대로 주면
+        # 남의 재무제표를 그 회사 것으로 답한다.
+        #
+        #   KB금융 자산총계 464,418 = 신한지주 = 하나금융지주 = POSCO홀딩스
+        #   (네 회사의 최대주주가 모두 국민연금공단이라 값이 같았다)
+        #
+        # 해결은 **막는 게 아니라 주인을 밝히는 것**이다. 그래서 값은 그대로
+        # 두고, 회사 자신을 묻는 질문과 최대주주를 묻는 질문에 서로 다른 것을
+        # 준다. "KB금융 최대주주의 자산총계는?" 도 답할 수 있어야 한다.
+        #
+        #   value_owner="self"   회사 자신의 값만 (기본)
+        #   value_owner="other"  최대주주 등 제3자의 값만
+        #   value_owner="any"    둘 다
+        if value_owner not in ("self", "other", "any"):
+            raise ValueError(
+                f"value_owner 는 self|other|any 여야 합니다: {value_owner!r}")
+        # 판정은 두 가지를 OR 로 본다.
+        #   ① value_owner 컬럼 — 추출할 때 표에서 확인한 주인 (새로 만든 DB)
+        #   ② 섹션+항목 규칙  — 그 컬럼이 없는 예전 DB 를 위한 대비책
+        # 팀원이 들고 있는 artifacts 사본을 다시 만들지 않아도 동작해야 한다.
+        key_ph = ",".join("?" * len(OTHER_PARTY_FINANCIAL_KEYS))
+        by_section = f"(section_path LIKE ? AND key IN ({key_ph}))"
+        owner_params = [f"%{OTHER_PARTY_SECTION}%", *OTHER_PARTY_FINANCIAL_KEYS]
+        if "value_owner" in self.columns:
+            by_column = "(value_owner IS NOT NULL AND value_owner <> IFNULL(company, ''))"
+            third_party = f"({by_column} OR {by_section})"
+        else:
+            # 구버전 DB — 추출 시점 기록이 없으니 섹션 규칙만으로 판정한다.
+            third_party = by_section
+        if value_owner == "self":
+            where.append(f"NOT {third_party}")
+            params.extend(owner_params)
+        elif value_owner == "other":
+            where.append(third_party)
+            params.extend(owner_params)
 
         def _run(key_clause: str | None, key_params: list) -> list[dict]:
             w = list(where) + ([key_clause] if key_clause else [])
@@ -236,7 +298,7 @@ class FactStore:
             else:
                 sql += " ORDER BY filing_date DESC, fact_id ASC LIMIT ?"
             rows = self.conn.execute(sql, p + [limit]).fetchall()
-            return [self._row(r) for r in rows]
+            return [self._annotate_owner(self._row(r)) for r in rows]
 
         if not key:
             return _run(None, [])
@@ -270,6 +332,31 @@ class FactStore:
             "COUNT(DISTINCT doc_id) docs, COUNT(DISTINCT key_norm) keys FROM facts"
         ).fetchone()
         return dict(c)
+
+    def _annotate_owner(self, row: dict) -> dict:
+        """이 수치가 누구 것인지 적어 준다.
+
+        값을 지우는 대신 이름을 붙인다. 근거 블록이 "국민연금공단의 자산총계"
+        라고 표시할 수 있어야, 최대주주를 묻는 질문에도 답하고 회사를 묻는
+        질문에서 잘못 쓰이지도 않는다.
+        """
+        stored = row.get("value_owner")
+        if stored:
+            # 추출할 때 표에서 확인한 주인이다. 추정보다 이게 정확하다.
+            row["value_owner_is_company"] = stored == row.get("company")
+            return row
+        section = row.get("section_path") or []
+        is_third_party = (
+            any(OTHER_PARTY_SECTION in str(part) for part in section)
+            and row.get("key") in OTHER_PARTY_FINANCIAL_KEYS
+        )
+        if is_third_party:
+            row["value_owner"] = self.owner_by_chunk.get(row.get("chunk_id") or "") or "최대주주"
+            row["value_owner_is_company"] = False
+        else:
+            row["value_owner"] = row.get("company")
+            row["value_owner_is_company"] = True
+        return row
 
     @staticmethod
     def _row(r: sqlite3.Row) -> dict:

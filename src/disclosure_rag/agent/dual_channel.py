@@ -179,6 +179,7 @@ class DualChannelRetriever:
                             company=company, key=key, doc_group=doc_group,
                             period=period, latest_only=latest_only,
                             corrections_only=bool(getattr(plan, "corrections_only", False)),
+                            value_owner=getattr(plan, "value_owner", "self"),
                             order_by=order_by, limit=per_field,
                         )
                         for row in found:

@@ -128,6 +128,33 @@ class Fact(BaseModel):
     unit_value: str | None = None           # DART TU[AUNITVALUE] — 이미 정규화된 값
     section_path: list[str] = Field(default_factory=list)
 
+    # 이 수치의 주인. 보통은 보고서를 낸 회사(company)지만, 「주주에 관한 사항」의
+    # '최대주주 및 특수관계인 현황' 표처럼 **다른 법인의 재무현황**을 싣는 표가
+    # 있다. 그 표에는 주인 이름이 같은 표 안에 적혀 있으므로 추출할 때 붙인다.
+    # None 이면 company 가 주인이다.
+    value_owner: str | None = None
+
+
+# 표 안에 이 항목이 있으면, 그 표의 수치는 **그 이름의 법인 것**이다.
+# (「VII. 주주에 관한 사항」의 최대주주 및 특수관계인 현황 표)
+OWNER_NAME_KEYS = ("법인 또는 단체의 명칭", "법인또는단체의명칭", "법인명", "단체의 명칭")
+
+
+def _table_owner(kv) -> str | None:
+    """이 표의 수치가 누구 것인지 표 안에서 찾는다.
+
+    2026-09-01 실측: 이걸 안 해서 국민연금공단의 자산총계가 KB금융·신한지주·
+    하나금융지주·POSCO홀딩스의 값으로 저장돼 있었다(네 곳 다 464,418). 값도
+    문서도 맞았고 **주인만 없었다.**
+    """
+    for pair in kv.pairs:
+        key = (pair.key or "").strip()
+        if any(marker in key for marker in OWNER_NAME_KEYS):
+            value = (pair.value or "").strip()
+            if value and value not in _EMPTY_VALUES:
+                return value
+    return None
+
 
 def normalize_key(key: str) -> tuple[str, str | None]:
     """항목명에서 번호와 단위를 떼어낸다. -> (key_norm, unit)
@@ -262,6 +289,9 @@ def extract_facts(
     """ParsedDocument 하나에서 fact 행들을 뽑는다 (chunk_id 는 아직 비어 있음)."""
     facts: list[Fact] = []
     for section, kv in _iter_kv(parsed.sections):
+        # 표 하나를 통째로 보고 주인을 먼저 정한다. 행 단위로는 알 수 없다 —
+        # 주인 이름은 표의 다른 행에 적혀 있기 때문이다.
+        table_owner = _table_owner(kv)
         for pair in kv.pairs:
             raw_key, raw_val = (pair.key or "").strip(), (pair.value or "").strip()
             if not raw_key or raw_val in _EMPTY_VALUES:
@@ -299,6 +329,9 @@ def extract_facts(
                 value_text=raw_val, value_num=num, value_unit=unit, value_date=date,
                 field_code=pair.field_code, unit_code=pair.unit_code, unit_value=pair.unit_value,
                 section_path=list(section.path),
+                # 주인이 따로 적힌 표면 그 이름을, 아니면 None(=회사 자신).
+                value_owner=(table_owner if table_owner and table_owner != row.corp_name
+                             else None),
             ))
     return facts
 

@@ -54,6 +54,7 @@ def build_evidence_pack(trace: AgentTrace) -> EvidencePack:
                     f"기간: {item.get('period')}\n"
                     f"Section: {' > '.join(item.get('section_path') or [])}\n"
                     f"정정 상태: {status}\n"
+                    f"{third_party_note(item.get('section_path'))}"
                     f"내용:\n{item.get('text')}\n"
                     f"report_id: {item.get('report_id')}\n"
                     f"chunk_id: {item.get('chunk_id')}\n"
@@ -94,6 +95,32 @@ def build_evidence_pack(trace: AgentTrace) -> EvidencePack:
 # 바뀌면 그 튜닝이 무효가 된다.
 
 
+# 「VII. 주주에 관한 사항」 같은 절에는 **그 회사가 아닌 법인**의 재무현황이
+# 실린다(최대주주 및 특수관계인 현황). 사람은 표 제목을 보고 구분하지만,
+# 청크만 떼어 놓으면 회사 이름과 숫자만 남아 그 회사 값처럼 보인다.
+# 실제로 그렇게 읽혔다 — 삼성전자 매출을 삼성SDI 사업보고서의 최대주주
+# 재무현황에서 가져온 사고가 여기서 나왔다.
+_THIRD_PARTY_SECTIONS = ("주주에 관한 사항", "타법인출자", "타법인 출자", "계열회사")
+
+
+def _fact_owner(row: dict) -> str:
+    """이 수치의 주인 이름. 회사 자신이 아니면 그렇게 적는다."""
+    owner = row.get("value_owner")
+    company = row.get("company")
+    if owner and not row.get("value_owner_is_company", True):
+        return f"{owner} — {company} 공시에 실린 제3자 수치"
+    return company or (owner or "?")
+
+
+def third_party_note(section_path) -> str:
+    """이 근거의 수치가 그 회사 것이 아닐 수 있으면 한 줄 경고를 만든다."""
+    joined = " > ".join(str(part) for part in (section_path or []))
+    if any(marker in joined for marker in _THIRD_PARTY_SECTIONS):
+        return ("⚠ 주의: 이 절의 재무수치는 **이 회사가 아니라 최대주주·출자대상 등 "
+                "다른 법인의 것**이다. 이 회사 값으로 쓰면 안 된다.\n")
+    return ""
+
+
 def _evidence_block(idx: int, *, company, report_name, filing_date, period,
                     section_path, is_correction, is_latest, text,
                     report_id, chunk_id) -> str:
@@ -108,6 +135,7 @@ def _evidence_block(idx: int, *, company, report_name, filing_date, period,
         f"기간: {period}\n"
         f"Section: {' > '.join(section_path or [])}\n"
         f"정정 상태: {status}\n"
+        f"{third_party_note(section_path)}"
         f"내용:\n{text}\n"
         f"report_id: {report_id}\n"
         f"chunk_id: {chunk_id}\n"
@@ -225,9 +253,12 @@ def build_evidence_pack_from_retrieval(
             hidden = len(fact_rows) - len(shown)
         # Facts 는 표에서 확정된 값이라 검색 근거보다 신뢰도가 높다. 그 사실을
         # 프롬프트에 명시한다.
+        # 값의 주인을 **회사가 아니라 실제 주인 이름으로** 적는다. 예전에는
+        # 최대주주 재무현황의 값에도 보고서를 낸 회사 이름이 붙어서
+        # "KB금융 자산총계 464,418" 로 보였다(실제로는 국민연금공단 값).
         body = "\n".join(
             f"- {row.get('item') or row.get('key_norm')}: {row.get('value')or row.get('value_text')}"
-            f" ({row.get('company')} / {row.get('report_name')} / {row.get('filing_date')})"
+            f" ({_fact_owner(row)} / {row.get('report_name')} / {row.get('filing_date')})"
             f" [report_id: {row.get('report_id') or row.get('doc_id')}]"
             for row in shown
         )

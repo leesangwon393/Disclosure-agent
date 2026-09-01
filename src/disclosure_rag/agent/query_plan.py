@@ -102,6 +102,14 @@ class QueryPlan:
     report_types: list[str] = field(default_factory=list)   # doc_group
     report_kinds: list[str] = field(default_factory=list)   # field_schema 의 유형명
 
+    # --- 수치의 주인 --------------------------------------------------------
+    # 사업보고서에는 그 회사 수치만 실리는 게 아니다. 「주주에 관한 사항」에는
+    # 최대주주 법인의 재무현황이, 「타법인 출자현황」에는 출자한 회사의 수치가
+    # 실린다. 질문이 회사 자신을 묻는지 최대주주를 묻는지 갈라야 한다.
+    #   self  회사 자신 (기본)
+    #   other 최대주주·특수관계인 등 제3자
+    value_owner: str = "self"
+
     # --- 집계 --------------------------------------------------------------
     aggregation: Aggregation = "none"
 
@@ -222,6 +230,27 @@ _OPEN_ENDINGS = (
     "어떻게 변화", "어떻게 달라", "무엇이 달라", "어떤 내용", "어떤 차이",
     "비교했을 때", "기준으로 주요",
 )
+
+
+_OWNER_OTHER_MARKERS = (
+    "최대주주", "최대 주주", "대주주", "특수관계인", "특수관계자",
+    "지배주주", "모회사", "지주회사의 주주",
+)
+
+
+def detect_value_owner(query: str) -> str:
+    """질문이 회사 자신을 묻는지, 최대주주 같은 제3자를 묻는지.
+
+    "KB금융의 자산총계는?"          -> self   (KB금융 것)
+    "KB금융 최대주주의 자산총계는?"  -> other  (국민연금공단 것)
+
+    같은 사업보고서 안에 두 값이 다 들어 있어서, 이걸 안 가르면 둘 중 하나는
+    반드시 틀린다. 실제로 갈리기 전에는 최대주주 값이 회사 값으로 나갔다
+    (2026-09-01: KB금융·신한지주·하나금융지주·POSCO홀딩스 자산총계가 전부
+    464,418 로 같았고, 넷 다 최대주주가 국민연금공단이었다).
+    """
+    text = _nfc(query)
+    return "other" if any(marker in text for marker in _OWNER_OTHER_MARKERS) else "self"
 
 
 def _nfc(s: str) -> str:
@@ -490,6 +519,7 @@ class RulePlanBuilder:
         return QueryPlan(
             answer_mode=mode,
             task=task,
+            value_owner=detect_value_owner(q),
             companies=companies,
             company_mentions=mentions,
             periods=periods,
