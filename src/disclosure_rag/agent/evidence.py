@@ -154,42 +154,110 @@ def _evidence_block(idx: int, *, company, report_name, filing_date, period,
 _FACTS_SHOWN = 8
 
 
-def _mark_aggregate(fact_rows: list[dict], aggregation: str) -> list[str]:
-    """최대/최소를 **우리가 계산해서** 명시한다.
+def _fact_value(row: dict):
+    return row.get("value") or row.get("value_text")
+
+
+def _mark_aggregate(fact_rows: list[dict], aggregation: str, *,
+                    compare_winner: bool = False) -> list[str]:
+    """최대/최소와 **승자 판정**을 우리가 계산해서 명시한다.
 
     실측 실패(v2 38문항 S011): Facts 가 한전기술 계약금액 10건을 줬고 그 안에
     최댓값 1,250,850,298,678 이 있었는데, 모델은 5번째 값 373,449,426,066 을
     골랐다. 목록에서 최댓값을 고르는 건 모델이 자주 틀린다 — 파이썬이 하면
     틀릴 일이 없다.
 
-    비교 질문(회사 2곳)이 있으므로 **회사·항목별로** 따로 계산한다.
+    승자 판정을 여기 넣은 이유(2026-09-01 실측):
+        G0066 "삼성중공업과 삼성전자 중 최대 계약금액이 더 큰 쪽은?"
+          삼성중공업  4,571,600,000,000   <- 두 값 다 정확히 찾았다
+          삼성전자   22,764,764,160,000
+          답변: "삼성중공업의 계약금액이 더 큽니다"   <- 틀렸다
+    회사별 최댓값까지는 파이썬이 계산해 주고 **거기서 멈춰서** 대소 비교를
+    모델에 넘겼다. 0이 13개 붙은 수를 눈으로 견주다 틀린 것이다.
+    비교 문항 60건 중 계산이 붙은 24건은 96%, 안 붙은 36건은 50%였다.
+
+    회사별 대표값을 고르는 규칙
+        aggregation=max/min  그 회사 값들의 극값
+        aggregation=none     **가장 최신 공시의 값** (Facts 가 날짜 내림차순으로
+                             주므로 첫 행). "지금 얼마인가" 를 묻는 것으로 본다.
     """
-    if aggregation not in ("max", "min"):
+    if aggregation not in ("max", "min") and not compare_winner:
         return []
+
     groups: dict[tuple, list[dict]] = {}
     for row in fact_rows:
-        value = row.get("value_num")
-        if value is None:
+        if row.get("value_num") is None:
             continue
         key = (row.get("company"), row.get("item") or row.get("key_norm"))
         groups.setdefault(key, []).append(row)
+    if not groups:
+        return []
 
-    label = "최대" if aggregation == "max" else "최소"
-    pick = max if aggregation == "max" else min
-    lines = []
-    for (company, item), rows in groups.items():
-        best = pick(rows, key=lambda r: r["value_num"])
-        lines.append(
-            f"▶ {company} {item} {label}값: {best.get('value') or best.get('value_text')}"
-            f" [report_id: {best.get('report_id') or best.get('doc_id')}]"
-        )
+    lines: list[str] = []
+    # (항목 -> [(회사, 대표행)]) 로 모아 두었다가 회사 간 비교에 쓴다
+    by_item: dict[str, list[tuple[str, dict]]] = {}
+
+    if aggregation in ("max", "min"):
+        label = "최대" if aggregation == "max" else "최소"
+        pick = max if aggregation == "max" else min
+        for (company, item), rows in groups.items():
+            best = pick(rows, key=lambda r: r["value_num"])
+            lines.append(
+                f"▶ {company} {item} {label}값: {_fact_value(best)}"
+                f" [report_id: {best.get('report_id') or best.get('doc_id')}]"
+            )
+            by_item.setdefault(item, []).append((company, best))
+    else:
+        # 승자만 묻는 질문 — 회사마다 최신 값을 대표로 뽑는다.
+        for (company, item), rows in groups.items():
+            best = rows[0]
+            lines.append(
+                f"▶ {company} {item}: {_fact_value(best)}"
+                f" [report_id: {best.get('report_id') or best.get('doc_id')}]"
+            )
+            by_item.setdefault(item, []).append((company, best))
+
+    if compare_winner:
+        lines.extend(_mark_winner(by_item, aggregation))
     return lines
+
+
+def _mark_winner(by_item: dict[str, list[tuple[str, dict]]], aggregation: str) -> list[str]:
+    """항목별로 회사 간 승자를 계산한다. 모델은 이 줄을 옮겨 적기만 한다."""
+    smaller = aggregation == "min"
+    out: list[str] = []
+    for item, pairs in by_item.items():
+        # 같은 회사가 두 번 들어오지 않게 (항목이 같으면 회사당 1행)
+        uniq: dict[str, dict] = {}
+        for company, row in pairs:
+            if company and company not in uniq:
+                uniq[company] = row
+        if len(uniq) < 2:
+            continue
+        ranked = sorted(uniq.items(), key=lambda kv: kv[1]["value_num"], reverse=not smaller)
+        top_company, top_row = ranked[0]
+        second_company, second_row = ranked[1]
+        if top_row["value_num"] == second_row["value_num"]:
+            names = ", ".join(c for c, _r in ranked
+                              if _r["value_num"] == top_row["value_num"])
+            out.append(f"▶▶ {item} 비교 결과: 동일 ({names})")
+            continue
+        word = "작다" if smaller else "크다"
+        gap = abs(top_row["value_num"] - second_row["value_num"])
+        out.append(
+            f"▶▶ {item} 비교 결과: {top_company}가 더 {word}"
+            f" ({_fact_value(top_row)} vs {_fact_value(second_row)}, 차이 {gap:,.0f})"
+        )
+        if len(ranked) > 2:
+            order = " > ".join(c for c, _r in ranked)
+            out.append(f"▶▶ {item} 순위: {order}")
+    return out
 
 
 def build_evidence_pack_from_retrieval(
     question: str, chunks_with_scores, *, facts=(), aggregation: str = "none",
     max_chars: int | None = None, scope_note: str = "",
-    chunk_owners: dict | None = None,
+    chunk_owners: dict | None = None, compare_winner: bool = False,
 ) -> EvidencePack:
     """검색 결과에서 Evidence Pack 을 만든다.
 
@@ -277,11 +345,11 @@ def build_evidence_pack_from_retrieval(
             # 행 중 value_num 이 없는 것은 ▶ 계산에도 안 들어간다. 사실과
             # 다른 안내였다(2026-08-31 발견).
             body += f"\n- (그 외 {hidden}건 생략)"
-        marks = _mark_aggregate(fact_rows, aggregation)
+        marks = _mark_aggregate(fact_rows, aggregation, compare_winner=compare_winner)
         header = "[FACT] 공시 표에서 직접 추출한 확정 값입니다."
         if marks:
-            header += ("\n아래 ▶ 는 **계산이 끝난 값**입니다. 목록에서 직접 고르지 말고 "
-                       "▶ 값을 그대로 쓰세요.\n" + "\n".join(marks))
+            header += ("\n아래 ▶ 와 ▶▶ 는 **계산이 끝난 값**입니다. 목록에서 직접 고르거나 "
+                       "직접 비교하지 말고 그대로 쓰세요.\n" + "\n".join(marks))
         lines.append(header + "\n" + body + "\n")
         tool_results_summary.append({"tool": "fact_lookup", "arguments": {},
                                      "result": {"rows": fact_rows}})

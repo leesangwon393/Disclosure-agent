@@ -70,11 +70,42 @@ def _group_key(chunk: Any) -> str | None:
 
 
 def _order(chunk: Any) -> int:
+    """정정 체인 안에서의 순서.
+
+    `correction_order` 가 없으면 **접수일**로 대신한다. Facts(sqlite) 행에는
+    그 컬럼이 아예 없어서, 예전에는 전부 0 이 되어 "가장 최신을 남긴다" 는
+    대비책이 사실상 아무거나 남기고 있었다(2026-09-01 발견).
+    """
     o = _attr(chunk, "correction_order")
-    return int(o) if o is not None else 0
+    if o is not None:
+        try:
+            return int(o)
+        except (TypeError, ValueError):
+            pass
+    filing = str(_attr(chunk, "filing_date") or "")
+    return int(filing) if filing.isdigit() else 0
 
 
-def _select_report_ids(chunks: Sequence[Any], policy: LatestPolicy) -> set[str] | None:
+def _in_window(chunk: Any, periods: Sequence[str] | None) -> bool:
+    """이 문서가 질문이 지목한 기간(YYYY-MM 또는 YYYY) 안에 있는가."""
+    if not periods:
+        return True
+    filing = str(_attr(chunk, "filing_date") or "")
+    period = str(_attr(chunk, "period") or "")
+    for want in periods:
+        want = str(want)
+        if len(want) >= 7:                      # YYYY-MM
+            head = want[:4] + want[5:7]         # YYYYMM
+            if filing.startswith(head) or period.startswith(want):
+                return True
+        else:                                   # YYYY
+            if filing.startswith(want) or period.startswith(want):
+                return True
+    return False
+
+
+def _select_report_ids(chunks: Sequence[Any], policy: LatestPolicy,
+                       periods: Sequence[str] | None = None) -> set[str] | None:
     """정책에 따라 **남길 문서 id 집합**을 정한다. None 이면 전부 남긴다.
 
     문서 단위로 정하고 청크는 그 결과를 따른다 — 같은 문서의 청크가 정책에
@@ -96,12 +127,29 @@ def _select_report_ids(chunks: Sequence[Any], policy: LatestPolicy) -> set[str] 
             continue
         groups.setdefault(gid, {})[rid] = (_order(c), _attr(c, "is_latest"))
 
+    # latest_in_window 는 문서별 접수일이 필요하므로 따로 모아 둔다.
+    in_window: dict[str, bool] = {}
+    for c in chunks:
+        rid = str(_attr(c, "report_id") or "")
+        if rid and rid not in in_window:
+            in_window[rid] = _in_window(c, periods)
+
     keep: set[str] = set(ungrouped)
     for _gid, members in groups.items():
         if len(members) == 1:
             keep.update(members)
             continue
         orders = {rid: o for rid, (o, _l) in members.items()}
+        if policy == "latest_in_window":
+            # 질문이 지목한 기간 안에서 가장 늦은 1건. 그 안에 아무것도 없으면
+            # 체인 전체에서 가장 늦은 1건으로 물러선다.
+            #
+            # **끄는 게 아니라 기준 시점을 옮기는 것**이다. 5월에 정정본이
+            # 3건이면 5월 안에서 최신(05-24)을 고른다. 코퍼스 전체의 최종본
+            # (2026-01-20)을 고르지 않는다.
+            candidates = [rid for rid in orders if in_window.get(rid, True)]
+            keep.add(max(candidates or list(orders), key=lambda r: orders[r]))
+            continue
         if policy == "first_and_final":
             keep.add(min(orders, key=lambda r: orders[r]))
             keep.add(max(orders, key=lambda r: orders[r]))
@@ -120,11 +168,15 @@ def _select_report_ids(chunks: Sequence[Any], policy: LatestPolicy) -> set[str] 
 
 def deduplicate_versions(
     chunks: Iterable[Any], policy: LatestPolicy = "latest_only",
+    *, periods: Sequence[str] | None = None,
 ) -> tuple[list[Any], DedupReport]:
-    """정책에 맞는 버전의 청크만 남긴다. 입력 순서는 그대로 유지한다."""
+    """정책에 맞는 버전의 청크만 남긴다. 입력 순서는 그대로 유지한다.
+
+    `periods` 는 `latest_in_window` 에서만 쓴다 — 질문이 지목한 기간이다.
+    """
     items = list(chunks)
     report = DedupReport(policy=policy)
-    keep = _select_report_ids(items, policy)
+    keep = _select_report_ids(items, policy, periods)
 
     if keep is None:
         report.kept = len(items)
@@ -147,10 +199,11 @@ def deduplicate_versions(
 
 def deduplicate_scored(
     scored: Iterable[tuple[Any, float]], policy: LatestPolicy = "latest_only",
+    *, periods: Sequence[str] | None = None,
 ) -> tuple[list[tuple[Any, float]], DedupReport]:
     """`(chunk, score)` 목록용. 검색기 출력이 이 형태다."""
     pairs = list(scored)
-    kept, report = deduplicate_versions([c for c, _s in pairs], policy)
+    kept, report = deduplicate_versions([c for c, _s in pairs], policy, periods=periods)
     keep_ids = {id(c) for c in kept}
     return [p for p in pairs if id(p[0]) in keep_ids], report
 

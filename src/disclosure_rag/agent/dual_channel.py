@@ -195,7 +195,8 @@ class DualChannelRetriever:
 
         # latest_only는 SQL에서도 적용하지만 first_and_final/all_versions는
         # 정정 체인을 실제 정책대로 정리해야 한다. 점수나 재정렬은 생기지 않는다.
-        kept, _report = deduplicate_versions(rows, plan.latest_policy)
+        kept, _report = deduplicate_versions(rows, plan.latest_policy,
+                                             periods=plan.periods)
         return kept
 
     @property
@@ -240,6 +241,10 @@ class DualChannelRetriever:
                 continue
             if plan.latest_policy == "latest_only":
                 keep = record.is_latest
+            elif plan.latest_policy == "latest_in_window":
+                # 기간으로 이미 걸렀으므로 그 안의 것은 다 남긴다.
+                # 어느 판을 쓸지는 version_dedup 이 정한다.
+                keep = True
             elif plan.latest_policy == "first_and_final":
                 keep = record.correction_order == 0 or record.is_latest
             else:
@@ -275,7 +280,7 @@ class DualChannelRetriever:
                     rerank_top_n=rerank_top_n,
                 )
                 deduped, dedup_report = deduplicate_scored(
-                    trace.results, plan.latest_policy,
+                    trace.results, plan.latest_policy, periods=plan.periods,
                 )
                 return deduped, {
                     "channel_counts": trace.channel_counts,
@@ -285,7 +290,8 @@ class DualChannelRetriever:
                     "version_dedup": asdict(dedup_report),
                 }
             raw = self.unstructured.search(query, k=top_k, flt=retrieval_filter)
-            deduped, dedup_report = deduplicate_scored(raw, plan.latest_policy)
+            deduped, dedup_report = deduplicate_scored(raw, plan.latest_policy,
+                                                       periods=plan.periods)
             return deduped, {"version_dedup": asdict(dedup_report)}
 
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="unstructured-retrieval") as pool:

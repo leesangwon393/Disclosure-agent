@@ -69,8 +69,9 @@ TASKS: tuple[Task, ...] = (
 Aggregation = Literal["max", "min", "count", "none"]
 AGGREGATIONS: tuple[Aggregation, ...] = ("max", "min", "count", "none")
 
-LatestPolicy = Literal["latest_only", "first_and_final", "all_versions"]
-LATEST_POLICIES: tuple[LatestPolicy, ...] = ("latest_only", "first_and_final", "all_versions")
+LatestPolicy = Literal["latest_only", "latest_in_window", "first_and_final", "all_versions"]
+LATEST_POLICIES: tuple[LatestPolicy, ...] = (
+    "latest_only", "latest_in_window", "first_and_final", "all_versions")
 
 # 필드를 누가 채웠는가. plan_validator 가 HCX 가 채운 값만 골라 검증할 때 쓴다.
 FieldSource = Literal["rule", "hcx", "default"]
@@ -112,6 +113,11 @@ class QueryPlan:
 
     # --- 집계 --------------------------------------------------------------
     aggregation: Aggregation = "none"
+    # 질문이 "둘 중 어느 쪽이 더 큰가" 를 묻는가.
+    # 대소 비교는 **모델이 자주 틀린다** — 0이 13개 붙은 수를 눈으로 견준다.
+    # 실측(2026-09-01): 계산이 붙는 유형 96%, 모델에 맡긴 유형 50%.
+    # 이 값이 True 면 파이썬이 승자를 계산해 프롬프트에 못 박는다.
+    compare_winner: bool = False
 
     # --- 버전 처리 ----------------------------------------------------------
     latest_policy: LatestPolicy = "latest_only"
@@ -372,6 +378,26 @@ _MAX_WORDS = ("최대", "최고", "가장 큰", "가장 많은", "가장 높은"
 _MIN_WORDS = ("최소", "최저", "가장 작은", "가장 적은", "가장 낮은", "최소액")
 
 
+# "더 큰 쪽" 을 묻는 표현. `_COMPARE_WORDS` 는 task 판정용이라 "비교" 처럼
+# 승자를 묻지 않는 말까지 들어 있어서 따로 둔다.
+_WINNER_MAX_WORDS = ("더 큰", "더 많은", "더 높은", "큰 쪽", "많은 쪽", "높은 쪽",
+                     "어느 기업이 더", "어느 쪽이 더", "중 어느")
+_WINNER_MIN_WORDS = ("더 작은", "더 적은", "더 낮은", "작은 쪽", "적은 쪽", "낮은 쪽")
+
+
+def detect_compare_winner(query: str) -> bool:
+    """질문이 **누가 더 큰지/작은지**를 묻는가.
+
+    실측(2026-09-01, suite_v2 비교 문항 60건):
+        aggregation=max 로 잡혀 ▶ 계산이 붙은 24건 -> 정답률 96%
+        aggregation=none 이라 계산이 안 붙은 36건 -> 정답률 50%
+    질문에 "더 큰 쪽은 어느 기업인가" 가 명백히 적혀 있는데 계산 신호로
+    읽지 않아 생긴 차이다. 승자 판정을 파이썬이 하면 없어진다.
+    """
+    q = _nfc(query)
+    return any(w in q for w in _WINNER_MAX_WORDS + _WINNER_MIN_WORDS)
+
+
 def detect_aggregation(query: str) -> Aggregation:
     """질문이 값들 중 하나를 고르라고 하는가.
 
@@ -388,15 +414,31 @@ def detect_aggregation(query: str) -> Aggregation:
     return "none"
 
 
+# 질문이 **특정 공시 한 건을 지목**했는지 알아보는 표지.
+#   "현대건설의 2024년 05월 [기재정정]단일판매ㆍ공급계약체결에 기재된 ..."
+# 이런 질문에 "최신 정정본만" 규칙을 그대로 적용하면 그 문서를 버린다.
+# 실측(2026-09-01): 정답 문서가 최신본이 아닌 22문항 정답률 27%,
+# 최신본인 214문항은 81%. 현대건설 계약 하나가 판본 15개인데 14개를 버렸다.
+_PINPOINT_MONTH = re.compile(r"20\d{2}\s*(?:년\s*\d{1,2}\s*월|[.\-/]\s*\d{1,2})")
+
+
+def pinpoints_a_filing(query: str) -> bool:
+    """질문이 연·월까지 찍어서 특정 공시를 지목하는가."""
+    return bool(_PINPOINT_MONTH.search(_nfc(query)))
+
+
 def decide_latest_policy(query: str) -> LatestPolicy:
     q = _nfc(query)
     if not any(w in q for w in _CORRECTION_WORDS):
-        return "latest_only"
+        # 정정을 언급하지 않은 질문이라도 연·월을 찍었으면 그 시점 기준이다.
+        return "latest_in_window" if pinpoints_a_filing(q) else "latest_only"
     if any(w in q for w in _ALL_VERSION_WORDS):
         return "all_versions"
     if any(w in q for w in _FIRST_AND_FINAL_WORDS):
         return "first_and_final"
-    return "latest_only"
+    # "[기재정정]…2024년 05월 공시" 처럼 정정본을 시점까지 찍어 물으면
+    # 코퍼스 전체의 최종본이 아니라 **그 시점의 최신본**을 답해야 한다.
+    return "latest_in_window" if pinpoints_a_filing(q) else "latest_only"
 
 
 # ---------------------------------------------------------------- report_types
@@ -495,6 +537,7 @@ class RulePlanBuilder:
             src["corrections_only"] = "rule"
 
         aggregation = detect_aggregation(q)
+        compare_winner = detect_compare_winner(q)
         if aggregation != "none":
             src["aggregation"] = "rule"
 
@@ -528,6 +571,7 @@ class RulePlanBuilder:
             latest_policy=latest_policy,
             corrections_only=corrections_only,
             aggregation=aggregation,
+            compare_winner=compare_winner,
             expected_fields=expected_fields,
             needs_multiple_documents=needs_multi,
             operations=operations,
@@ -761,7 +805,7 @@ class PlanValidator:
 __all__ += [
     "RulePlanBuilder", "PlanValidator", "PlanValidation", "PlanIssue",
     "classify_answer_mode", "classify_task", "decide_latest_policy", "detect_report_types",
-    "detect_aggregation",
+    "detect_aggregation", "detect_compare_winner", "pinpoints_a_filing",
 ]
 
 

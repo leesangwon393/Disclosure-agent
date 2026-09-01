@@ -21,7 +21,10 @@ _RECENT_N_YEAR = r"최근\s*\d+\s*년"
 _QUARTER = r"[1-4]\s*분기"
 _HALF = r"상반기|하반기"
 _YM = r"20\d{2}[.\-]\s*\d{1,2}\s*월?"
-_PERIOD_PAT = re.compile("|".join([_RECENT_N_YEAR, _YM, _YEAR, _QUARTER, _HALF]))
+# "2024년 05월" 형태. _YEAR 보다 **먼저** 와야 "2024년" 으로 잘리지 않는다.
+# 이게 없어서 연·월을 지목한 질문 94건 중 54건이 월 정보를 잃었다(2026-09-01).
+_YM_KO = r"20\d{2}\s*년\s*\d{1,2}\s*월"
+_PERIOD_PAT = re.compile("|".join([_RECENT_N_YEAR, _YM_KO, _YM, _YEAR, _QUARTER, _HALF]))
 
 _CORRECTION_KEYWORDS = ("기재정정", "정정공시", "정정")
 

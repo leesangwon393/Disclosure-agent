@@ -45,6 +45,9 @@ from disclosure_rag.common.unicode_utils import normalize_nfc
 # "2024년" "2024" "2024.3" "2024-03" "2024. 3월"
 _YEAR_RE = re.compile(r"(20\d{2})")
 _YM_RE = re.compile(r"(20\d{2})\s*[.\-/]\s*(\d{1,2})")
+# "2024년 05월". `년` 뒤에 `월` 을 반드시 요구한다 — 안 그러면 "2024년 1분기" 의
+# `1` 을 월로 잘못 읽는다.
+_YM_KO_RE = re.compile(r"(20\d{2})\s*년\s*(\d{1,2})\s*월")
 # 70개사 전부 12월 결산이므로 분기 → 기준월이 결정된다.
 _QUARTER_MONTH = {"1": "03", "2": "06", "3": "09", "4": "12"}
 
@@ -93,10 +96,13 @@ def normalize_period_tokens(tokens: list[str] | str | None) -> list[str] | None:
 
     out: list[str] = []
 
-    for m in _YM_RE.finditer(joined):
-        month = int(m.group(2))
-        if 1 <= month <= 12:
-            out.append(f"{m.group(1)}-{month:02d}")
+    for rx in (_YM_KO_RE, _YM_RE):
+        for m in rx.finditer(joined):
+            month = int(m.group(2))
+            if 1 <= month <= 12:
+                value = f"{m.group(1)}-{month:02d}"
+                if value not in out:
+                    out.append(value)
 
     years = [m.group(1) for m in _YEAR_RE.finditer(joined)]
     # 이미 YYYY-MM 으로 잡힌 연도는 중복으로 넣지 않는다.
