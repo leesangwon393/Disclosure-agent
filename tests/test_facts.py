@@ -46,6 +46,22 @@ def test_key_normalization_merges_spacing_variants():
     assert normalize_key("최근 매출액")[0] == normalize_key("최근매출액")[0]
 
 
+def test_key_unit_rejects_non_unit_parenthetical():
+    """항목명 끝 괄호가 실제 단위가 아니면 unit 으로 삼지 않는다.
+
+    실측(2026-09-02): KB금융 자기주식취득금액한도 항목의 원문 괄호에 표
+    안 다른 칸의 선택항목 각주("①-②-③-④-⑤+⑥" 류, 파싱 후 "1-2-3-4-5+6")가
+    끼어 있었다. 검증 없이 그대로 unit 으로 저장하면, 실제로는 백만원 단위인
+    값이 원 단위인 값과 그대로 비교되어("3,152,769" vs "602,541,960,605")
+    확신에 찬 오답("하이브가 더 크다")이 나온다. 괄호는 항목명에서 지우되
+    unit 은 비워야 한다.
+    """
+    assert normalize_key("자기주식취득금액한도(1-2-3-4-5+6)") == ("자기주식취득금액한도", None)
+    assert normalize_key("취득예정금액(가-나-다-라)") == ("취득예정금액", None)
+    # 진짜 단위는 여전히 인정한다.
+    assert normalize_key("자기주식취득금액한도(백만원)") == ("자기주식취득금액한도", "백만원")
+
+
 def test_value_parsing_keeps_original_and_adds_number():
     """value_text(근거 표시용)와 value_num(범위 질의용)을 둘 다 가져야 한다."""
     num, unit, date = parse_value("22,764,764,160,000", key_unit="원")

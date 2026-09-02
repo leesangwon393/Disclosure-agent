@@ -1,0 +1,8 @@
+{
+  "pipeline": "v2",
+  "gold": "eval/rerun_172_abstention.jsonl",
+  "normal_gold": "eval/suite_v1.jsonl",
+  "artifacts": "artifacts_v2",
+  "corpus": "corpus",
+  "reranker": true
+}

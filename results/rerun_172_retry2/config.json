@@ -1,0 +1,15 @@
+{
+  "gold": "eval/rerun_172_retry2.jsonl",
+  "artifacts": "artifacts_v2",
+  "mode": "full",
+  "pipeline": "v2",
+  "thinking": "off",
+  "k": 10,
+  "candidate_k": 50,
+  "rerank_top_n": 50,
+  "limit": 0,
+  "sample": 0,
+  "seed": 20260830,
+  "reranker": true,
+  "max_iterations": 6
+}

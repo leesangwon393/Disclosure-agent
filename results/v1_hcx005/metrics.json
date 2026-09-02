@@ -1,0 +1,124 @@
+{
+  "mode": "full",
+  "n": 38,
+  "labels": {
+    "정답": 21,
+    "검색실패": 4,
+    "답변실패": 11,
+    "거부(검색실패)": 2
+  },
+  "label_rate": {
+    "정답": 0.5526,
+    "검색실패": 0.1053,
+    "답변실패": 0.2895,
+    "거부(검색실패)": 0.0526
+  },
+  "latency_mean_sec": 24.16,
+  "latency_p95_sec": 72.95,
+  "latency_max_sec": 81.51,
+  "latency_breakdown": {
+    "bm25": {
+      "median_ms": 267.7,
+      "mean_ms": 429.7,
+      "max_ms": 3343.4,
+      "n": 37
+    },
+    "dense": {
+      "median_ms": 381.2,
+      "mean_ms": 465.1,
+      "max_ms": 5052.9,
+      "n": 37
+    },
+    "expand": {
+      "median_ms": 3.0,
+      "mean_ms": 4.1,
+      "max_ms": 19.2,
+      "n": 37
+    },
+    "facts": {
+      "median_ms": 23.5,
+      "mean_ms": 56.3,
+      "max_ms": 296.1,
+      "n": 37
+    },
+    "fusion": {
+      "median_ms": 0.0,
+      "mean_ms": 0.1,
+      "max_ms": 0.3,
+      "n": 37
+    },
+    "hcx": {
+      "median_ms": 10689.2,
+      "mean_ms": 17078.4,
+      "max_ms": 74245.0,
+      "n": 36
+    },
+    "other": {
+      "median_ms": 0.0,
+      "mean_ms": 23.8,
+      "max_ms": 769.5,
+      "n": 37
+    },
+    "process": {
+      "median_ms": 0.1,
+      "mean_ms": 0.3,
+      "max_ms": 2.7,
+      "n": 37
+    },
+    "rerank": {
+      "median_ms": 4401.2,
+      "mean_ms": 4766.3,
+      "max_ms": 11168.9,
+      "n": 37
+    },
+    "sparse": {
+      "median_ms": 351.6,
+      "mean_ms": 431.7,
+      "max_ms": 1126.0,
+      "n": 37
+    },
+    "total": {
+      "median_ms": 16316.9,
+      "mean_ms": 22743.2,
+      "max_ms": 81512.2,
+      "n": 37
+    }
+  },
+  "answer_hit": 0.1316,
+  "evidence_hit": 0.8421,
+  "refusal": 0.0789,
+  "numbers_grounded": 0.8421,
+  "has_citation": 0.7105,
+  "validation_passed": 0.5263,
+  "answer_hit_exact": 0.1053,
+  "graded_hit": 0.5526,
+  "graded_hit_n": 38,
+  "ungradeable_n": 0,
+  "answer_hit_given_evidence": 0.1562,
+  "field_coverage": 0.733,
+  "field_coverage_n": 21,
+  "silent_omission_rate": 0.267,
+  "silent_omission_rate_n": 21,
+  "citation_recall": 0.5949,
+  "citation_recall_n": 38,
+  "citation_precision": 0.765,
+  "citation_precision_n": 27,
+  "required_coverage": 0.5469,
+  "required_coverage_n": 16,
+  "unit_stated": 0.5455,
+  "unit_stated_n": 33,
+  "by_doc_group": {
+    "?": {
+      "n": 38,
+      "answer_hit": 0.1316,
+      "evidence_hit": 0.8421,
+      "refusal": 0.0789,
+      "numbers_grounded": 0.8421,
+      "has_citation": 0.7105,
+      "validation_passed": 0.5263,
+      "answer_hit_exact": 0.1053,
+      "graded_hit": 0.5526,
+      "gradeable_n": 38
+    }
+  }
+}

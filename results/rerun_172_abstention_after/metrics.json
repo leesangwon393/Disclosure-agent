@@ -1,0 +1,40 @@
+{
+  "n": 2,
+  "n_predicted": 2,
+  "abstention_accuracy": 0.5,
+  "action_accuracy": 0.0,
+  "predicted_actions": {
+    "answer": 1,
+    "refuse": 1
+  },
+  "by_reason": {
+    "no_answer_in_doc": {
+      "n": 1,
+      "abstention_accuracy": 0.0,
+      "action_accuracy": 0.0,
+      "failed_ids": [
+        "ABS-N037"
+      ]
+    },
+    "wrong_entity": {
+      "n": 1,
+      "abstention_accuracy": 1.0,
+      "action_accuracy": 0.0,
+      "failed_ids": []
+    }
+  },
+  "false_refusal_rate": 0.0,
+  "answerable_n": 1,
+  "false_refusal_n": 0,
+  "false_refusal_ids": [],
+  "stopped_at": {
+    "answered": 1,
+    "scope_gate": 1
+  },
+  "hcx_calls_on_abstention_set": 1,
+  "hcx_calls_on_pipeline_refusals": 0,
+  "hcx_calls_on_answerable_set": 1,
+  "errors": 0,
+  "answerable_errors": 0,
+  "elapsed_sec": 349.23
+}

@@ -45,6 +45,7 @@ from pydantic import BaseModel, Field
 
 from disclosure_rag.chunking.chunk_schema import ChunkSchema
 from disclosure_rag.common.doc_tree import KeyValueNode, ParsedDocument, SectionNode
+from disclosure_rag.common.korean_number import normalize_unit_text
 from disclosure_rag.common.manifest_loader import ManifestRow
 from disclosure_rag.correction.correction_graph_builder import CorrectionRecord
 
@@ -63,6 +64,17 @@ _DATE_PATTERNS = [
 ]
 # 항목명 끝의 단위 표기: "계약금액(원)", "매출액대비(%)"
 _KEY_UNIT = re.compile(r"[（(]\s*([^)）]{1,12})\s*[)）]\s*$")
+# normalize_unit_text() 는 원화 배수 환산용이라 %·주·명 같은 비화폐 단위는
+# 모른다(2026-09-02 발견). 항목명 괄호 검증에는 이쪽도 같이 인정해야
+# "매출액대비(%)" 같은 정상 표기까지 단위 없음으로 떨어지지 않는다.
+_NON_MONETARY_KEY_UNITS = frozenset({
+    "%", "%p", "주", "명", "건", "개", "배", "년", "월", "일", "회", "기",
+    "구좌", "좌", "포인트",
+})
+
+
+def _is_recognized_unit(candidate: str) -> bool:
+    return bool(normalize_unit_text(candidate)) or candidate in _NON_MONETARY_KEY_UNITS
 # 항목 번호: "1. ", "가. ", "- ", "3) "
 _KEY_PREFIX = re.compile(r"^\s*(?:[0-9]{1,2}|[가-힣])\s*[.)]\s*|^\s*[-·※]\s*")
 _EMPTY_VALUES = {"", "-", "–", "해당사항 없음", "해당사항없음", "해당없음", "N/A", "없음", "미해당"}
@@ -212,7 +224,18 @@ def normalize_key(key: str) -> tuple[str, str | None]:
     unit = None
     m = _KEY_UNIT.search(k)
     if m:
-        unit = m.group(1).strip()
+        candidate = m.group(1).strip()
+        # 괄호 안이 실제 단위(원/백만원/% 등)일 때만 unit 으로 인정한다.
+        # 검증 없이 그대로 받으면 각주·선택항목 참조("1-2-3-4-5+6",
+        # "가-나-다-라" 처럼 표의 체크박스/각주 번호가 항목명 끝에 괄호로
+        # 붙은 경우)가 unit 자리에 들어가, 뒤에서 그 값을 실제 단위로 믿고
+        # 비교·환산하면 확신에 찬 오답이 나온다(2026-09-02 발견: KB금융
+        # 자기주식취득금액한도가 "1-2-3-4-5+6" 단위로 저장돼 승자 비교가
+        # 단위 환산 없이 이뤄짐). 괄호 자체는 항목명에서 지운다 — 단위든
+        # 각주든 항목명의 일부는 아니라서 남겨두면 같은 항목이 문서마다
+        # 다른 key_norm 으로 갈린다.
+        if _is_recognized_unit(candidate):
+            unit = candidate
         k = k[: m.start()].strip()
     k = k.rstrip(":： ").strip()
     # 한글 서식은 자간을 띄어 쓰는 경우가 많다("최근 매출액" vs "최근매출액",

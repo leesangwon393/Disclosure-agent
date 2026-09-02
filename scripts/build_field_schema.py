@@ -104,7 +104,17 @@ _CORP_SUFFIX = re.compile(r"(주식회사|\(주\)|㈜)")
 # 재검색까지 다 돌아 300초 근처까지 느려지고 결국 거부로 끝난다.
 # 전수조사(2026-09-01): 90개사·323종·3,557건. `_CORP_SUFFIX`는 "㈜"/"주식회사"가
 # 붙은 것만 걸러서 "SK텔레콤"·"KT"·"NAVER"처럼 접미사 없는 이름은 통과했다.
-_REPORT_TYPE_LABELS = {"사업보고서", "분기보고서", "반기보고서"}
+_REPORT_TYPE_LABELS = {
+    "사업보고서", "분기보고서", "반기보고서", "주요사항보고서",
+    # 2026-09-02: 어간만 남은 경우("반기", "분기", "사업")도 실제로 발견됨
+    # (필드명 자리에 "반기"/"금융"/"현대중공업" 등이 그대로 박혀 있었다 —
+    # G0155 "KB금융의 반기보고서에 기재된 KB국민카드는?" 이 "필수 항목(반기,
+    # 금융)"으로 거부됐다). 이런 어간은 재무 항목명일 수 없으므로 통째로 뺀다.
+    "사업", "분기", "반기",
+}
+# "[기재정정]주요사항보고서" 처럼 정정 표시가 붙은 채로 항목명 자리에 새어
+# 들어온 경우. 마커를 뗀 뒤에도 위 라벨과 비교한다.
+_CORRECTION_MARKER_PREFIX = re.compile(r"^(?:\[기재정정\]|\[첨부추가\])+")
 
 
 def _load_company_names(registry_path: Path = Path("artifacts_v2/registry/entities.json")) -> tuple[str, ...]:
@@ -133,7 +143,8 @@ def _is_parse_artifact(key: str, company_names: tuple[str, ...] = ()) -> bool:
         return True
     if _CORP_SUFFIX.search(key):
         return True
-    if key in _REPORT_TYPE_LABELS:
+    bare = _CORRECTION_MARKER_PREFIX.sub("", key)
+    if key in _REPORT_TYPE_LABELS or bare in _REPORT_TYPE_LABELS:
         return True
     for name in company_names:
         # 접두사 매칭(예: "SK텔레콤본사")뿐 아니라 완전 일치도 잡는다.
@@ -142,6 +153,13 @@ def _is_parse_artifact(key: str, company_names: tuple[str, ...] = ()) -> bool:
         # (예: SK텔레콤=61,974). 회사명 자체가 재무항목일 리는 없으므로
         # 길이가 같아도(완전 일치) 잡는다 — 원래는 접두사만 걸렀다.
         if key.startswith(name):
+            return True
+        # 2026-09-02: 접두어가 아니라 **회사명 중간에 낀 조각**도 있었다.
+        # "HD현대중공업" -> "현대중공업", "한국항공우주" -> "항공우주",
+        # "KB금융" -> "금융". 실제 재무 항목명이 회사명의 부분문자열과
+        # 우연히 겹칠 가능성은 사실상 없다(매출액·부채총계류는 회사명과
+        # 안 겹친다) — 등록된 회사명 안에 포함되면 그 회사명 조각으로 본다.
+        if len(key) >= 2 and key in name:
             return True
     return False
 
