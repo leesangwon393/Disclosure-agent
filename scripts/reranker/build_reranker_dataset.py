@@ -17,7 +17,11 @@
 사용:
     python3 scripts/reranker/build_reranker_dataset.py \
         --gold eval/gold_passages_clean.jsonl --artifacts artifacts_v2 \
-        --out artifacts_v2/reranker_data
+        --out eval/reranker_data
+
+산출물 위치는 artifacts_v2/ 가 아니라 eval/ 이다 — artifacts_v2/ 는 전부
+.gitignore 대상(재생성되는 대용량 산출물)이라, 재현 가능하더라도 작고
+가치 있는 이 데이터셋(6.6MB)까지 거기 두면 커밋이 안 된다.
 """
 
 from __future__ import annotations
@@ -90,27 +94,43 @@ def classify_negative(positive_meta: dict, candidate) -> str | None:
     return "topic_related_same_scope"  # 회사·기간·유형 다 같음 -> false negative 의심(리뷰로)
 
 
-def load_positive_chunks(facts_db: Path, gold_rows: list[dict]) -> dict[int, list[dict]]:
-    """gold 문항 id -> [{"chunk_id","report_id","company","period","doc_group",...}, ...]"""
-    con = sqlite3.connect(f"file:{facts_db}?mode=ro", uri=True)
-    con.row_factory = sqlite3.Row
+def load_positive_chunks(facts_dbs: list[Path], gold_rows: list[dict]) -> dict[int, list[dict]]:
+    """gold 문항 id -> [{"chunk_id","report_id","company","period","doc_group",...}, ...]
+
+    facts 는 두 DB로 나뉜다(서식공시 vs 정기공시, `facts/multi_store.py` 참고) —
+    둘 다 봐야 한다. 서식 DB만 봤을 때 실측 286문항 중 188건이 매칭 실패했고,
+    그중 186건이 doc_group=periodic 이었다(2026-09-02 발견).
+    """
+    conns = []
+    for db in facts_dbs:
+        if not db.exists():
+            logger.warning("facts DB 없음, 건너뜀: %s", db)
+            continue
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        con.row_factory = sqlite3.Row
+        conns.append(con)
+
     out: dict[int, list[dict]] = {}
     for g in gold_rows:
         report_ids = g.get("gold_report_ids") or []
         if not report_ids or not g.get("company") or not g.get("key"):
             continue
         placeholders = ",".join("?" * len(report_ids))
-        rows = con.execute(
-            f"""SELECT DISTINCT chunk_id, doc_id, company, period, doc_group,
-                       section_path, is_correction, correction_group_id, is_latest
-                FROM facts
-                WHERE company = ? AND key_norm = ? AND doc_id IN ({placeholders})
-                  AND chunk_id IS NOT NULL""",
-            (g["company"], _norm_key(g["key"]), *report_ids),
-        ).fetchall()
+        rows: list[dict] = []
+        for con in conns:
+            found = con.execute(
+                f"""SELECT DISTINCT chunk_id, doc_id, company, period, doc_group,
+                           section_path, is_correction, correction_group_id, is_latest
+                    FROM facts
+                    WHERE company = ? AND key_norm = ? AND doc_id IN ({placeholders})
+                      AND chunk_id IS NOT NULL""",
+                (g["company"], _norm_key(g["key"]), *report_ids),
+            ).fetchall()
+            rows.extend(dict(r) for r in found)
         if rows:
-            out[g["id"]] = [dict(r) for r in rows]
-    con.close()
+            out[g["id"]] = rows
+    for con in conns:
+        con.close()
     return out
 
 
@@ -119,14 +139,15 @@ def _norm_key(key: str) -> str:
     return normalize_field_key(key)
 
 
-def build(gold_path: Path, facts_db: Path, artifacts: Path, out_dir: Path,
+def build(gold_path: Path, facts_dbs: list[Path], artifacts: Path, out_dir: Path,
          *, top_k: int = TOP_K_CANDIDATES, seed: int = 13) -> dict:
     from disclosure_rag.retrieval.index_bundle import load_bundle
+    from disclosure_rag.retrieval.metadata_filter import RetrievalFilter
 
     gold_rows = [json.loads(line) for line in gold_path.open(encoding="utf-8")]
     logger.info("gold 문항 %d건 로드", len(gold_rows))
 
-    positives_by_qid = load_positive_chunks(facts_db, gold_rows)
+    positives_by_qid = load_positive_chunks(facts_dbs, gold_rows)
     logger.info("facts↔chunk 연결로 positive 확보된 문항 %d/%d건", len(positives_by_qid), len(gold_rows))
 
     bundle = load_bundle(str(artifacts))
@@ -154,18 +175,34 @@ def build(gold_path: Path, facts_db: Path, artifacts: Path, out_dir: Path,
         }
         positive_meta["statement_kind"] = _statement_kind(positive_meta["section_path"])
 
-        candidates = bundle.retriever.search(g["query"], k=top_k)
+        # 회사 필터 없이 전체 62만 조각에서 검색하면 정기공시 정답 조각이
+        # 문서당 평균 560개 조각 속에 묻힌다(2026-09-02 발견: 필터 없이는
+        # positive 16/198 밖에 안 살아남았다. 실제 서빙(dual_channel.py)도
+        # QueryPlan에서 뽑은 회사로 항상 필터링하므로, 이게 리랭커가 실전에서
+        # 보게 될 후보 분포에도 더 가깝다).
+        flt = RetrievalFilter(companies=[g["company"]]) if g.get("company") else None
+        candidates = bundle.retriever.search(g["query"], k=top_k, flt=flt)
+        # 회사 필터를 걸면 "다른 회사" 계열 negative(유형 2)와 순수 easy
+        # negative가 후보 풀에서 아예 사라진다. 별도로 무필터 검색을 한 번
+        # 더 해서 그쪽 negative 후보를 보충한다(적은 수만 필요하다).
+        unfiltered = bundle.retriever.search(g["query"], k=10)
 
         hard_by_type: dict[str, list] = defaultdict(list)
         easy_pool: list = []
         seen_chunk_ids: set[str] = set()
 
-        for chunk, _score in candidates:
+        for chunk, _score in list(candidates) + list(unfiltered):
             if chunk.chunk_id in seen_chunk_ids:
                 continue
             seen_chunk_ids.add(chunk.chunk_id)
 
-            if chunk.chunk_id in pos_chunk_ids:
+            # facts.sqlite의 chunk_id 연결이 정기공시는 **parent 레벨**로 돼
+            # 있다(2026-09-02 발견). 검색 인덱스엔 leaf만 있어서 정확 일치가
+            # 거의 안 되고(positive 16/198), leaf.parent_chunk_id 로 견주면
+            # 잡힌다. 서식공시(major 등)는 원래 leaf로 연결돼 있어 이 조건이
+            # 덧붙는다고 잘못 잡힐 일은 없다(parent_chunk_id 도 pos_chunk_ids
+            # 안에 없으면 그냥 False).
+            if chunk.chunk_id in pos_chunk_ids or chunk.parent_chunk_id in pos_chunk_ids:
                 all_examples.append(Example(
                     query=g["query"], chunk_id=chunk.chunk_id, report_id=chunk.report_id,
                     text=chunk.raw_text, label=1, query_id=str(qid),
@@ -243,14 +280,30 @@ def build(gold_path: Path, facts_db: Path, artifacts: Path, out_dir: Path,
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--gold", default="eval/gold_passages_clean.jsonl")
-    ap.add_argument("--facts", default="artifacts_v2/facts/facts.sqlite")
+    ap.add_argument("--facts", action="append",
+                    default=None,
+                    help="facts.sqlite 경로. 여러 번 줄 수 있다(서식+정기공시). "
+                         "안 주면 artifacts_v2/facts 와 artifacts_v2/facts_periodic_v2_fix "
+                         "(없으면 facts_periodic_v2)를 자동으로 찾는다.")
     ap.add_argument("--artifacts", default="artifacts_v2")
-    ap.add_argument("--out", default="artifacts_v2/reranker_data")
+    ap.add_argument("--out", default="eval/reranker_data")
     ap.add_argument("--top-k", type=int, default=TOP_K_CANDIDATES)
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
 
-    meta = build(Path(args.gold), Path(args.facts), Path(args.artifacts), Path(args.out),
+    if args.facts:
+        facts_dbs = [Path(p) for p in args.facts]
+    else:
+        root = Path(args.artifacts)
+        facts_dbs = [root / "facts" / "facts.sqlite"]
+        for name in ("facts_periodic_v2_fix", "facts_periodic_v2", "facts_periodic"):
+            p = root / name / "facts.sqlite"
+            if p.exists():
+                facts_dbs.append(p)
+                break
+    logger.info("facts DB: %s", [str(p) for p in facts_dbs])
+
+    meta = build(Path(args.gold), facts_dbs, Path(args.artifacts), Path(args.out),
                 top_k=args.top_k)
     print(json.dumps(meta, ensure_ascii=False, indent=2))
     return 0

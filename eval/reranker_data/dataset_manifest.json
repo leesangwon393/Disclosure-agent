@@ -1,0 +1,20 @@
+{
+  "n_gold": 286,
+  "n_with_positive": 198,
+  "skipped_no_positive": 0,
+  "splits": {
+    "train": {
+      "queries": 140,
+      "examples": 1729
+    },
+    "val": {
+      "queries": 29,
+      "examples": 355
+    },
+    "test": {
+      "queries": 29,
+      "examples": 401
+    }
+  },
+  "review_needed": 116
+}
